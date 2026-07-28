@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1026634729182",
+    "project_id": "taximotodz-16",
+    "storage_bucket": "taximotodz-16.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1026634729182:android:d1616e14f57cc6cc81244f",
+        "android_client_info": {
+          "package_name": "com.taximoto.dz"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBjNnlpsKuoA95I-18bUuPzJqP0NJJ2Cnw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
