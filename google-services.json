@@ -7,6 +7,25 @@
   "client": [
     {
       "client_info": {
+        "mobilesdk_app_id": "1:1026634729182:android:86963d2d4b2c45f781244f",
+        "android_client_info": {
+          "package_name": "com.anonymous.taximotodz"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBjNnlpsKuoA95I-18bUuPzJqP0NJJ2Cnw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
         "mobilesdk_app_id": "1:1026634729182:android:d1616e14f57cc6cc81244f",
         "android_client_info": {
           "package_name": "com.taximoto.dz"
