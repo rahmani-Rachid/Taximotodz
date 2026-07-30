@@ -6,6 +6,7 @@
     "@expo/ui": "~56.0.23",
     "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "~56.0.17",
+    "expo-audio": "~56.0.13",
     "expo-constants": "~56.0.17",
     "expo-dev-client": "~56.0.24",
     "expo-device": "~56.0.4",
@@ -42,15 +43,14 @@
     "postinstall-postinstall": "^2.1.0",
     "typescript": "~6.0.3"
   },
- "scripts": {
-  "start": "expo start",
-  "reset-project": "node ./scripts/reset-project.js",
-  "android": "expo run:android",
-  "ios": "expo run:ios",
-  "web": "expo start --web",
-  "lint": "expo lint",
-  "postinstall": "patch-package"
-
-},
+  "scripts": {
+    "start": "expo start",
+    "reset-project": "node ./scripts/reset-project.js",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "lint": "expo lint",
+    "postinstall": "patch-package"
+  },
   "private": true
 }

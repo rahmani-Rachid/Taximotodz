@@ -1,4 +1,4 @@
-import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
+
 import { useRouter } from 'expo-router';
 import { createUserWithEmailAndPassword, signInWithPhoneNumber } from 'firebase/auth';
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
@@ -17,7 +17,7 @@ import {
   View
 } from 'react-native';
 import { Lang, useLanguage } from '../contexts/LanguageContext.tsx';
-import { auth, db, firebaseConfig } from '../utils/firebase';
+import { auth, db } from '../utils/firebase';
 
 const translations: Record<Lang, Record<string, string>> = {
   ar: {
@@ -197,12 +197,7 @@ export default function SignupCustomer() {
       style={{ flex: 1, backgroundColor: '#E8B84B' }}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      {/* عنصر reCAPTCHA الضروري لعمل Firebase Phone Auth */}
-      <FirebaseRecaptchaVerifierModal
-        ref={recaptchaRef}
-        firebaseConfig={firebaseConfig}
-        attemptInvisibleVerification
-      />
+   
 
       <ScrollView contentContainerStyle={s.scrollContent}>
 

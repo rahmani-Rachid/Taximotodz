@@ -1,4 +1,4 @@
-import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
+
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { createUserWithEmailAndPassword, fetchSignInMethodsForEmail, PhoneAuthProvider, signInWithCredential } from 'firebase/auth';
@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { registerForPushNotificationsAsync } from '../constants/pushNotifications';
 import { useLanguage } from '../contexts/LanguageContext'; // ← اللغة الآن مشتركة عبر التطبيق
-import { auth, db, firebaseConfig, storage } from '../utils/firebase';
+import { auth, db, storage } from '../utils/firebase';
 
 type Lang  = 'ar' | 'fr' | 'en';
 type Stage = 'form' | 'verify_phone' | 'password' | 'docs' | 'pending';
@@ -306,12 +306,7 @@ export default function RegisterDriver() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={20}>
 
-      {/* Recaptcha — مخفي لكن ضروري لـ Firebase Phone Auth */}
-      <FirebaseRecaptchaVerifierModal
-        ref={recaptchaRef}
-        firebaseConfig={firebaseConfig}
-        attemptInvisibleVerification
-      />
+     
 
       <ScrollView ref={scrollRef} style={s.container}
         contentContainerStyle={s.content}

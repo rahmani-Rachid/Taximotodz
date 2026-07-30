@@ -1,17 +1,19 @@
+import { useAudioPlayer } from 'expo-audio';
 import * as Location from 'expo-location';
 import { useRouter } from 'expo-router';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import {
-  collection, doc, getDoc, onSnapshot, orderBy,
+  collection, doc, getDoc, getDocs, increment, onSnapshot, orderBy,
   query, serverTimestamp, setDoc, updateDoc, where,
 } from 'firebase/firestore';
 import { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, Animated, Linking,
+  ActivityIndicator, Alert, Animated, Dimensions, Image, Linking,
   Modal, ScrollView, StyleSheet, Text,
   TextInput, TouchableOpacity, View,
 } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import RadarScope, { RadarPoint } from '../components/RadarScope';
 import RatingModal, { RatingReason, RatingStatus } from '../components/RatingModal';
 import { auth, db } from '../utils/firebase';
 
@@ -21,6 +23,9 @@ const CUSTOMER_BAD_REASONS: RatingReason[] = [
   { code: 'changed_destination',label: 'طلب مكاناً ثم غيّر الوجهة بدون زيادة الأجرة' },
   { code: 'rude',               label: 'بذيء اللسان' },
 ];
+
+const RADAR_RANGE_KM = 5;
+const RADAR_SIZE = Math.min(Dimensions.get('window').width - 24, 420); // يملأ عرض الهاتف تقريباً
 
 type LatLng = { latitude: number; longitude: number };
 
@@ -32,6 +37,7 @@ type RouteInfo = {
 
 type RideRequest = {
  id:             string;
+ customerId?:    string; // ← يُستخدم لاكتشاف وإلغاء الطلبات المكررة من نفس الزبون
  customerName:   string;
  phone:          string;
  customerRating: number;
@@ -43,7 +49,7 @@ type RideRequest = {
  destinationLat: number;
  destinationLng: number;
  price:          number;
- suggestedPrice: number; // السعر الأصلي الذي اقترحه التطبيق — للمقارنة (شارة "سعر عادل")
+ suggestedPrice: number;
  priceLabel:     string;
  tripRoute?:     RouteInfo;
  driverRoute?:   RouteInfo;
@@ -63,7 +69,16 @@ type CustomerRecord = {
  reporters:    string[];
  reporterIds:  string[];
  reasons:      string[];
+ ratingSum:    number; // ← مجموع النجوم التي أعطاها كل السائقين لهذا الزبون
+ ratingCount:  number; // ← عدد مرات التقييم — المتوسط = ratingSum / ratingCount
 };
+
+// يحوّل حالة التقييم النصية (جيد/متوسط/سيء) إلى عدد نجوم رقمي لحساب المتوسط الحقيقي
+function statusToStars(status: CustomerStatus): number {
+  if (status === 'good') return 5;
+  if (status === 'average') return 3;
+  return 1; // bad / thief
+}
 
 const STATUS_CONFIG: Record<CustomerStatus, { label: string; color: string; bg: string; icon: string }> = {
  good:    { label: 'جيد',     color: '#27ae60', bg: '#f0fdf4', icon: '✅' },
@@ -119,6 +134,17 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number) {
      Math.cos((lat2 * Math.PI) / 180) *
      Math.sin(dLng / 2) ** 2;
  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function bearingDeg(lat1: number, lng1: number, lat2: number, lng2: number) {
+  const φ1 = (lat1 * Math.PI) / 180;
+  const φ2 = (lat2 * Math.PI) / 180;
+  const λ1 = (lng1 * Math.PI) / 180;
+  const λ2 = (lng2 * Math.PI) / 180;
+  const y = Math.sin(λ2 - λ1) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(λ2 - λ1);
+  const θ = Math.atan2(y, x);
+  return ((θ * 180) / Math.PI + 360) % 360;
 }
 
 function regionForPoints(points: LatLng[], paddingFactor = 1.5) {
@@ -317,12 +343,15 @@ function CustomerHistoryModal({
 
 export default function AppDriver() {
  const router = useRouter();
+ const requestBeepPlayer = useAudioPlayer(require('../../assets/sounds/beep.wav'));
+ const prevRequestCountRef = useRef(0);
 
  const [checking,        setChecking]        = useState(true);
  const [name,            setName]            = useState('');
  const [phone,           setPhone]           = useState('');
  const [menuOpen,        setMenuOpen]        = useState(false);
  const [isOnline,        setIsOnline]        = useState(true);
+ const [viewMode,        setViewMode]        = useState<'radar' | 'map'>('radar');
  const [location,        setLocation]        = useState<{ lat: number; lng: number } | null>(null);
  const [locLoading,      setLocLoading]      = useState(true);
  const [requests,        setRequests]        = useState<RideRequest[]>([]);
@@ -333,6 +362,7 @@ export default function AppDriver() {
  const [routeLoading,    setRouteLoading]    = useState(false);
 
  const [customers,       setCustomers]       = useState<CustomerRecord[]>([]);
+ const [customerPhotos,  setCustomerPhotos]  = useState<Record<string, string>>({}); // customerId → photoURL
  const [historyOpen,     setHistoryOpen]     = useState(false);
  const [toasts,          setToasts]          = useState<{ id: number; msg: string; type: 'warn' | 'info' }[]>([]);
  const [todayEarnings,   setTodayEarnings]   = useState(0);
@@ -343,6 +373,7 @@ export default function AppDriver() {
 
  const slideAnim    = useRef(new Animated.Value(-300)).current;
  const detailMapRef = useRef<MapView>(null);
+ const mainMapRef   = useRef<MapView>(null);
  const toastId      = useRef(0);
 
  function pushToast(msg: string, type: 'warn' | 'info' = 'info') {
@@ -351,14 +382,26 @@ export default function AppDriver() {
  }
 
  useEffect(() => {
-   const unsub = onAuthStateChanged(auth, async (user) => {
+   const unsub = onAuthStateChanged(auth, (user) => {
      if (!user) { router.replace('/login-driver'); return; }
-     const snap = await getDoc(doc(db, 'drivers', user.uid));
-     const data = snap.data();
-     if (!data || data.kyc_status !== 'approved') { router.replace('/login-driver'); return; }
-     setName(data.name || '');
-     setPhone(data.phone || '');
-     setChecking(false);
+
+     // تحميل بيانات السائق مع إعادة محاولة تلقائية عند انقطاع الإنترنت
+     let cancelled = false;
+     const loadDriverData = async () => {
+       try {
+         const snap = await getDoc(doc(db, 'drivers', user.uid));
+         if (cancelled) return;
+         const data = snap.data();
+         if (!data || data.kyc_status !== 'approved') { router.replace('/login-driver'); return; }
+         setName(data.name || '');
+         setPhone(data.phone || '');
+         setChecking(false);
+       } catch {
+         if (!cancelled) setTimeout(loadDriverData, 3000);
+       }
+     };
+     loadDriverData();
+     return () => { cancelled = true; };
    });
    return unsub;
  }, []);
@@ -414,6 +457,7 @@ export default function AppDriver() {
        const r = d.data();
        return {
          id:             d.id,
+         customerId:     r.customerId ?? undefined,
          customerName:   r.customerName ?? 'زبون',
          phone:          r.customerPhone ?? '',
          customerRating: r.customerRating ?? 4.5,
@@ -433,6 +477,24 @@ export default function AppDriver() {
    });
    return unsub;
  }, [location, isOnline]);
+
+ // ── صوت تنبيه (bip) عند وصول طلب جديد — يعلو مستوى الصوت كلما كان الزبون الجديد أقرب ──
+ useEffect(() => {
+   if (requests.length > prevRequestCountRef.current && location) {
+     let nearestKm = Infinity;
+     for (const req of requests) {
+       const d = haversineKm(location.lat, location.lng, req.pickupLat, req.pickupLng);
+       if (d < nearestKm) nearestKm = d;
+     }
+     const proximityRatio = Math.min(nearestKm / RADAR_RANGE_KM, 1); // 0 = قريب جداً، 1 = بعيد
+     requestBeepPlayer.volume = Math.max(1 - proximityRatio, 0.35); // كلما اقترب الزبون، ارتفع الصوت
+     try {
+       requestBeepPlayer.seekTo(0);
+       requestBeepPlayer.play();
+     } catch {}
+   }
+   prevRequestCountRef.current = requests.length;
+ }, [requests]);
 
  useEffect(() => {
    if (!activeRide) return;
@@ -471,12 +533,36 @@ export default function AppDriver() {
          reporters:   r.reporters ?? [],
          reporterIds: r.reporterIds ?? [],
          reasons:     r.reasons ?? [],
+         ratingSum:   r.ratingSum ?? 0,
+         ratingCount: r.ratingCount ?? 0,
        };
      });
      setCustomers(recs);
    });
    return unsub;
  }, []);
+
+ // متوسط النجوم الحقيقي لزبون معيّن — 5.0 افتراضياً لزبون جديد لم يُقيَّم بعد
+ function getCustomerAvgRating(phone: string): { avg: number; count: number } {
+   const rec = customers.find(c => c.phone === phone);
+   if (!rec || rec.ratingCount === 0) return { avg: 5.0, count: 0 };
+   return { avg: rec.ratingSum / rec.ratingCount, count: rec.ratingCount };
+ }
+
+ // ── جلب صورة الزبون الحقيقية (المرفوعة من settings.tsx) لعرضها على الرادار وبطاقات الطلبات ──
+ useEffect(() => {
+   const missing = requests
+     .map(r => r.customerId)
+     .filter((id): id is string => !!id && !(id in customerPhotos));
+   if (missing.length === 0) return;
+   missing.forEach(async (id) => {
+     try {
+       const snap = await getDoc(doc(db, 'users', id));
+       const url = snap.data()?.photoURL;
+       if (url) setCustomerPhotos(prev => ({ ...prev, [id]: url }));
+     } catch {}
+   });
+ }, [requests]);
 
  function getCustomerRecord(phone: string): CustomerRecord | undefined {
    return customers.find(c => c.phone === phone);
@@ -517,13 +603,28 @@ export default function AppDriver() {
  const proposePrice = async (req: RideRequest, price: number) => {
    if (!auth.currentUser || !location) return;
    try {
+     // ── جلب تقييم السائق الحقيقي (من تقييمات الزبائن) وعدد رحلاته الدائم قبل إرسال العرض ──
+     let realRating = 5.0;
+     let realTrips  = 0;
+     try {
+       const [driverRepSnap, driverDocSnap] = await Promise.all([
+         getDoc(doc(db, 'driverReports', auth.currentUser.uid)),
+         getDoc(doc(db, 'drivers', auth.currentUser.uid)),
+       ]);
+       const repData = driverRepSnap.data();
+       if (repData?.ratingCount > 0) {
+         realRating = repData.ratingSum / repData.ratingCount;
+       }
+       realTrips = driverDocSnap.data()?.totalTrips ?? 0;
+     } catch {}
+
      await setDoc(doc(db, 'rides', req.id, 'offers', auth.currentUser.uid), {
        driverId:    auth.currentUser.uid,
        driverName:  name,
        driverPhone: phone,
        price,
-       rating:      4.8,
-       trips:       todayRides,
+       rating:      realRating,
+       trips:       realTrips,
        etaMin:      req.driverRoute?.durationMin ?? 5,
        distKm:      req.driverRoute?.distanceKm ?? 1,
        lat:         location.lat,
@@ -549,6 +650,23 @@ export default function AppDriver() {
        }, { merge: true });
      } catch {}
 
+     // ── إلغاء أي طلبات أخرى معلّقة (pending) من نفس الزبون — تختفي فوراً من قائمة كل السائقين ──
+     if (req.customerId) {
+       try {
+         const dupQ = query(
+           collection(db, 'rides'),
+           where('customerId', '==', req.customerId),
+           where('status', '==', 'pending'),
+         );
+         const dupSnap = await getDocs(dupQ);
+         await Promise.all(
+           dupSnap.docs
+             .filter(d => d.id !== req.id)
+             .map(d => updateDoc(doc(db, 'rides', d.id), { status: 'cancelled' }).catch(() => {}))
+         );
+       } catch {}
+     }
+
      Alert.alert('📤 تم الإرسال', `اقترحت ${price} DZD للعميل، بانتظار موافقته`);
      setDetailRequest(null);
      setSelectedRequest(null);
@@ -557,9 +675,6 @@ export default function AppDriver() {
    }
  };
 
- // ── الزبون هو من يقبل عرضك من قائمة العروض (app-customer.tsx) —
- // بمجرد قبوله، حالة الرحلة تتحول لـ accepted وتختفي تلقائياً من "pending"
- // عند كل السائقين الآخرين (شرط where('status','==','pending') أعلاه) ──
  useEffect(() => {
    if (!auth.currentUser) return;
    const q = query(
@@ -588,17 +703,40 @@ export default function AppDriver() {
        priceLabel:     '',
      };
      setActiveRide(req);
+     setViewMode('map');
      updateDoc(doc(db, 'drivers', auth.currentUser!.uid), {
        activeCustomerId: r.customerId ?? null,
      }).catch(() => {});
      pushToast(`✅ وافق ${req.customerName} على عرضك — ${req.price} DZD`, 'info');
+
+     // تكبير فوري على مستوى الشارع يشمل موقعي وموقع الزبون معاً
+     if (location && mainMapRef.current) {
+       mainMapRef.current.animateToRegion(
+         regionForPoints([
+           { latitude: location.lat, longitude: location.lng },
+           { latitude: req.pickupLat, longitude: req.pickupLng },
+         ], 1.8),
+         700,
+       );
+     }
+
+     // جلب مسار الاتجاه الحقيقي فوراً — كان مفقوداً سابقاً لأن activeRide يُبنى من جديد بدون بيانات المسار المحسوبة مسبقاً
+     if (location) {
+       Promise.all([
+         fetchOSRM(req.pickupLat, req.pickupLng, req.destinationLat, req.destinationLng),
+         fetchOSRM(location.lat, location.lng, req.pickupLat, req.pickupLng),
+       ]).then(([tripRoute, driverRoute]) => {
+         setActiveRide(prev => prev && prev.id === req.id ? { ...prev, tripRoute, driverRoute } : prev);
+       }).catch(() => {});
+     }
    });
    return unsub;
  }, [activeRide]);
 
  const markArrived = () => {
    if (!activeRide) return;
-   updateDoc(doc(db, 'rides', activeRide.id), { status: 'arrived' }).catch(() => {});
+   // arrivedPing يزيد مع كل ضغطة — بهذا تتكرر إشارة الجرس + الاهتزاز عند الزبون في كل مرة، وليس مرة واحدة فقط
+   updateDoc(doc(db, 'rides', activeRide.id), { status: 'arrived', arrivedPing: increment(1) }).catch(() => {});
    pushToast('📍 تم إعلام الزبون بوصولك', 'info');
  };
 
@@ -614,6 +752,7 @@ export default function AppDriver() {
            if (auth.currentUser) {
              updateDoc(doc(db, 'drivers', auth.currentUser.uid), {
                activeCustomerId: null,
+               totalTrips: increment(1), // ← عدد دائم، يبقى محفوظاً عبر كل الجلسات
              }).catch(() => {});
            }
            setTodayEarnings(e => e + activeRide.price);
@@ -623,6 +762,7 @@ export default function AppDriver() {
            setRatingVisible(true);
          }
          setActiveRide(null);
+         setViewMode('radar');
          pushToast('🏁 تمت الرحلة بنجاح', 'info');
        },
      },
@@ -650,6 +790,10 @@ export default function AppDriver() {
        if (reasonCode) reasons.add(reasonCode);
      }
 
+     // ── كل تقييم (جيد/متوسط/سيء) يُضاف لمتوسط النجوم الحقيقي، بغض النظر عن التبليغ ──
+     const ratingSum   = (existing?.ratingSum ?? 0) + statusToStars(status);
+     const ratingCount = (existing?.ratingCount ?? 0) + 1;
+
      await setDoc(custRef, {
        name:        existing?.name ?? '',
        trips:       existing?.trips ?? 0,
@@ -660,6 +804,8 @@ export default function AppDriver() {
        reporters:   Array.from(reporters),
        reporterIds: Array.from(reporterIds),
        reasons:     Array.from(reasons),
+       ratingSum,
+       ratingCount,
        updatedAt:   serverTimestamp(),
      }, { merge: true });
 
@@ -719,195 +865,241 @@ export default function AppDriver() {
    return customers.find(c => c.phone === phone)?.status === 'thief' ?? false;
  }
 
+ const radarPoints: RadarPoint[] = requests.map(req => ({
+   id: req.id,
+   angleDeg: bearingDeg(location.lat, location.lng, req.pickupLat, req.pickupLng),
+   distanceRatio: haversineKm(location.lat, location.lng, req.pickupLat, req.pickupLng) / RADAR_RANGE_KM,
+   photoURL: req.customerId ? customerPhotos[req.customerId] : undefined,
+   thief: isThiefLevel(req.phone),
+   flagged: isFlagged(req.phone),
+ }));
+
+ const showRadarScreen = isOnline && !activeRide && viewMode === 'radar';
+ const showMapScreen   = !showRadarScreen;
+
  return (
    <View style={s.container}>
-     <MapView
-       provider={PROVIDER_GOOGLE}
-       style={s.fullMap}
-       initialRegion={{
-         latitude: location.lat, longitude: location.lng,
-         latitudeDelta: 0.025, longitudeDelta: 0.025,
-       }}
-       showsMyLocationButton={false}
-     >
-       <Marker coordinate={{ latitude: location.lat, longitude: location.lng }}>
-         <BikeMarker />
-       </Marker>
 
-       {!activeRide && requests.map(req => {
-         const flagged = isFlagged(req.phone);
-         const thief   = isThiefLevel(req.phone);
-         return (
-           <Marker key={req.id}
-             coordinate={{ latitude: req.pickupLat, longitude: req.pickupLng }}
-             onPress={() => setSelectedRequest(req)}>
-             <View style={[mk.reqDot, thief && { borderColor: '#ef4444', borderWidth: 3 }, flagged && !thief && { borderColor: '#f97316', borderWidth: 2 }]}>
-               <Text style={mk.reqDotText}>{thief ? '🚨' : flagged ? '⚠️' : '🙂'}</Text>
-             </View>
-           </Marker>
-         );
-       })}
-
-       {activeRide && (
-         <>
-           <Marker coordinate={{ latitude: activeRide.pickupLat, longitude: activeRide.pickupLng }}>
-             <View style={mk.markerA}><Text style={mk.markerLetter}>A</Text></View>
-           </Marker>
-           <Marker coordinate={{ latitude: activeRide.destinationLat, longitude: activeRide.destinationLng }}>
-             <View style={mk.markerB}><Text style={mk.markerLetter}>B</Text></View>
-           </Marker>
-           {activeRide.driverRoute?.coords && (
-             <Polyline coordinates={activeRide.driverRoute.coords}
-               strokeColor="#4A90E2" strokeWidth={5} lineDashPattern={[6, 4]} lineCap="round" />
-           )}
-           {activeRide.tripRoute?.coords && (
-             <Polyline coordinates={activeRide.tripRoute.coords}
-               strokeColor="#1a56b0" strokeWidth={5} lineCap="round" />
-           )}
-         </>
-       )}
-     </MapView>
-
-     <View style={s.header}>
-       <TouchableOpacity style={s.iconBtn} onPress={openMenu}>
-         <Text style={s.menuIcon}>☰</Text>
-       </TouchableOpacity>
-       <OnlineToggle isOnline={isOnline} onToggle={() => setIsOnline(v => !v)} />
-       <TouchableOpacity style={s.iconBtn} onPress={() => router.push('/settings')}>
-         <Text style={{ fontSize: 20 }}>⚙️</Text>
-       </TouchableOpacity>
-     </View>
-
-     <View style={s.statsBar}>
-       <View style={s.statItem}>
-         <Text style={s.statVal}>{todayRides}</Text>
-         <Text style={s.statLabel}>رحلات</Text>
-       </View>
-       <View style={s.statDivider} />
-       <View style={s.statItem}>
-         <Text style={[s.statVal, { color: '#E8B84B' }]}>{todayEarnings} <Text style={s.statSuffix}>DZD</Text></Text>
-         <Text style={s.statLabel}>أرباح اليوم</Text>
-       </View>
-       <View style={s.statDivider} />
-       <TouchableOpacity style={s.statItem} onPress={() => setHistoryOpen(true)}>
-         <Text style={[s.statVal, thiefCount > 0 ? { color: '#ef4444' } : { color: '#8E8E93' }]}>
-           {thiefCount > 0 ? `🚨 ${thiefCount}` : '0'}
-         </Text>
-         <Text style={s.statLabel}>سارقون</Text>
-       </TouchableOpacity>
-     </View>
-
-     <View style={s.toastStack}>
-       {toasts.map(t => (
-         <Toast key={t.id} msg={t.msg} type={t.type}
-           onClose={() => setToasts(prev => prev.filter(x => x.id !== t.id))} />
-       ))}
-     </View>
-
-     {activeRide && (
-       <View style={s.activeCard}>
-         <View style={s.avatar}><Text style={s.avatarEmoji}>🙂</Text></View>
-         <View style={{ flex: 1 }}>
-           <Text style={s.miniName}>{activeRide.customerName}</Text>
-           <Text style={s.activePhone}>📞 {activeRide.phone}</Text>
-           <Text style={s.miniRoute} numberOfLines={1}>
-             {activeRide.pickupAddress} → {activeRide.destination}
-           </Text>
+     {showRadarScreen && (
+       <View style={s.radarScreen}>
+         <View style={s.header}>
+           <TouchableOpacity style={s.iconBtn} onPress={openMenu}>
+             <Text style={s.menuIcon}>☰</Text>
+           </TouchableOpacity>
+           <OnlineToggle isOnline={isOnline} onToggle={() => setIsOnline(v => !v)} />
+           <View style={s.iconBtnPlaceholder} />
          </View>
-         <View style={{ gap: 6 }}>
-           <TouchableOpacity style={s.callBtn} onPress={() => callCustomer(activeRide.phone)}>
-             <Text style={s.callBtnText}>📞 اتصال</Text>
-           </TouchableOpacity>
-           <TouchableOpacity style={[s.callBtn, { backgroundColor: '#4A90E2' }]} onPress={markArrived}>
-             <Text style={s.callBtnText}>📍 وصلت</Text>
-           </TouchableOpacity>
-           <TouchableOpacity style={s.finishBtn} onPress={finishRide}>
-             <Text style={s.finishBtnText}>إنهاء</Text>
-           </TouchableOpacity>
+
+         <View style={s.toastStack}>
+           {toasts.map(t => (
+             <Toast key={t.id} msg={t.msg} type={t.type}
+               onClose={() => setToasts(prev => prev.filter(x => x.id !== t.id))} />
+           ))}
          </View>
+
+         <View style={s.radarWrap}>
+           <RadarScope
+             online={isOnline}
+             points={radarPoints}
+             size={RADAR_SIZE}
+             onPressPoint={(id) => {
+               const req = requests.find(r => r.id === id);
+               if (req) openDetail(req);
+             }}
+           />
+           {requests.length === 0 ? (
+             <Text style={s.radarHint}>
+               {isOnline ? 'انتظر... ستظهر الطلبات هنا قريباً' : '🔴 أنت غير متصل. فعّل الاتصال لاستقبال الطلبات'}
+             </Text>
+           ) : (
+             <Text style={s.radarCount}>📦 {requests.length} طلبات متاحة حولك</Text>
+           )}
+         </View>
+
+         <ScrollView style={s.requestListWrap} contentContainerStyle={{ paddingBottom: 90 }}>
+           {requests.map(req => {
+             const rec         = customers.find(c => c.phone === req.phone);
+             const cmp         = rec?.complaints ?? 0;
+             const isThiefLvl2 = rec?.status === 'thief';
+             const isBadLvl1   = rec?.status === 'bad';
+             const distKm      = haversineKm(location.lat, location.lng, req.pickupLat, req.pickupLng);
+             return (
+               <TouchableOpacity key={req.id}
+                 style={[s.orderCard,
+                   isThiefLvl2 && { borderColor: '#ef4444', borderWidth: 1.5 },
+                   isBadLvl1 && !isThiefLvl2 && { borderColor: '#f97316', borderWidth: 1.5 },
+                 ]}
+                 onPress={() => openDetail(req)}>
+                 <View style={s.avatar}>
+                   {req.customerId && customerPhotos[req.customerId] ? (
+                     <Image source={{ uri: customerPhotos[req.customerId] }} style={s.avatarPhoto} />
+                   ) : (
+                     <Text style={s.avatarEmoji}>{isThiefLvl2 ? '🚨' : isBadLvl1 ? '⚠️' : '🙂'}</Text>
+                   )}
+                 </View>
+                 <View style={{ flex: 1 }}>
+                   <Text style={s.miniName}>{req.customerName}</Text>
+                   <Text style={s.orderDistance}>يبعد عنك {distKm.toFixed(1)} كم</Text>
+                   <Text style={s.miniRoute} numberOfLines={1}>
+                     {req.pickupAddress} → {req.destination}
+                   </Text>
+                   {isThiefLvl2 && <Text style={s.thiefTag}>🚨 سارق — بلّغ عنه {cmp} سائقين</Text>}
+                   {isBadLvl1 && !isThiefLvl2 && <Text style={[s.thiefTag, { color: '#f97316' }]}>⚠️ سلوك سيئ</Text>}
+                 </View>
+                 <View style={{ alignItems: 'flex-end' }}>
+                   <Text style={s.miniPrice}>{req.price} DZD</Text>
+                   {req.price >= req.suggestedPrice && (
+                     <Text style={s.fairPriceTag}>✅ عادل</Text>
+                   )}
+                 </View>
+               </TouchableOpacity>
+             );
+           })}
+         </ScrollView>
+
+         <TouchableOpacity style={s.goMapBtn} onPress={() => setViewMode('map')}>
+           <Text style={s.goMapBtnText}>🗺️ الذهاب إلى خريطة الطلبات</Text>
+         </TouchableOpacity>
        </View>
      )}
 
-     {!activeRide && selectedRequest && !detailRequest && (() => {
-       const rec        = customers.find(c => c.phone === selectedRequest.phone);
-       const complaints  = rec?.complaints ?? 0;
-       const isThiefLvl  = rec?.status === 'thief';
-       const isBadLvl    = rec?.status === 'bad';
-       const bannerMsg   = isThiefLvl
-         ? `🚨 سارق — بلّغ عنه ${complaints} سائقين`
-         : isBadLvl ? `⚠️ سلوك سيئ — بلّغ عنه سائق واحد` : null;
-       return (
-         <View style={[s.miniCard, isThiefLvl && { borderTopColor: '#ef4444', borderTopWidth: 3 }]}>
-           {bannerMsg && (
-             <View style={[s.thiefBanner, isBadLvl && !isThiefLvl && { backgroundColor: '#7c2d12' }]}>
-               <Text style={s.thiefBannerTxt}>{bannerMsg}</Text>
-             </View>
-           )}
-           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: bannerMsg ? 8 : 0 }}>
-             <View style={s.avatar}><Text style={s.avatarEmoji}>{isThiefLvl ? '🚨' : isBadLvl ? '⚠️' : '🙂'}</Text></View>
-             <View style={{ flex: 1 }}>
-               <Text style={s.miniName}>{selectedRequest.customerName}</Text>
-               <Text style={s.miniRoute} numberOfLines={1}>
-                 {selectedRequest.pickupAddress} → {selectedRequest.destination}
-               </Text>
-               <View style={s.ratingRow}>
-                 <Text style={s.star}>★</Text>
-                 <Text style={s.ratingVal}>{selectedRequest.customerRating.toFixed(2)}</Text>
-                 <Text style={s.tripCount}> ({selectedRequest.customerTrips})</Text>
-               </View>
-             </View>
-             <View style={{ alignItems: 'flex-end', gap: 6 }}>
-               <Text style={s.miniPrice}>{selectedRequest.price} DZD</Text>
-               {selectedRequest.price >= selectedRequest.suggestedPrice && (
-                 <Text style={s.fairPriceTag}>✅ سعر عادل</Text>
+     {showMapScreen && (
+       <>
+         <MapView
+           ref={mainMapRef}
+           provider={PROVIDER_GOOGLE}
+           style={s.fullMap}
+           initialRegion={{
+             latitude: location.lat, longitude: location.lng,
+             latitudeDelta: 0.025, longitudeDelta: 0.025,
+           }}
+           showsMyLocationButton={false}
+         >
+           <Marker coordinate={{ latitude: location.lat, longitude: location.lng }}>
+             <BikeMarker />
+           </Marker>
+
+           {!activeRide && requests.map(req => {
+             const flagged = isFlagged(req.phone);
+             const thief   = isThiefLevel(req.phone);
+             return (
+               <Marker key={req.id}
+                 coordinate={{ latitude: req.pickupLat, longitude: req.pickupLng }}
+                 onPress={() => setSelectedRequest(req)}>
+                 <View style={[mk.reqDot, thief && { borderColor: '#ef4444', borderWidth: 3 }, flagged && !thief && { borderColor: '#f97316', borderWidth: 2 }]}>
+                   <Text style={mk.reqDotText}>{thief ? '🚨' : flagged ? '⚠️' : '🙂'}</Text>
+                 </View>
+               </Marker>
+             );
+           })}
+
+           {activeRide && (
+             <>
+               <Marker coordinate={{ latitude: activeRide.pickupLat, longitude: activeRide.pickupLng }}>
+                 <View style={mk.markerA}><Text style={mk.markerLetter}>A</Text></View>
+               </Marker>
+               <Marker coordinate={{ latitude: activeRide.destinationLat, longitude: activeRide.destinationLng }}>
+                 <View style={mk.markerB}><Text style={mk.markerLetter}>B</Text></View>
+               </Marker>
+               {activeRide.driverRoute?.coords && (
+                 <Polyline coordinates={activeRide.driverRoute.coords}
+                   strokeColor="#4A90E2" strokeWidth={5} lineDashPattern={[6, 4]} lineCap="round" />
                )}
-               <TouchableOpacity style={s.viewDetailBtn} onPress={() => openDetail(selectedRequest)}>
-                 <Text style={s.viewDetailText}>التفاصيل ›</Text>
+               {activeRide.tripRoute?.coords && (
+                 <Polyline coordinates={activeRide.tripRoute.coords}
+                   strokeColor="#1a56b0" strokeWidth={5} lineCap="round" />
+               )}
+             </>
+           )}
+         </MapView>
+
+         <View style={s.header}>
+           <TouchableOpacity style={s.iconBtn} onPress={openMenu}>
+             <Text style={s.menuIcon}>☰</Text>
+           </TouchableOpacity>
+           <OnlineToggle isOnline={isOnline} onToggle={() => setIsOnline(v => !v)} />
+           <View style={s.iconBtnPlaceholder} />
+         </View>
+
+         {!activeRide && (
+           <TouchableOpacity style={s.backToRadarBtn} onPress={() => setViewMode('radar')}>
+             <Text style={s.backToRadarText}>📡 رجوع للرادار</Text>
+           </TouchableOpacity>
+         )}
+
+         <View style={s.toastStack}>
+           {toasts.map(t => (
+             <Toast key={t.id} msg={t.msg} type={t.type}
+               onClose={() => setToasts(prev => prev.filter(x => x.id !== t.id))} />
+           ))}
+         </View>
+
+         {activeRide && (
+           <View style={s.activeCard}>
+             <View style={s.avatar}><Text style={s.avatarEmoji}>🙂</Text></View>
+             <View style={{ flex: 1 }}>
+               <Text style={s.miniName}>{activeRide.customerName}</Text>
+               <Text style={s.activePhone}>📞 {activeRide.phone}</Text>
+               <Text style={s.miniRoute} numberOfLines={1}>
+                 {activeRide.pickupAddress} → {activeRide.destination}
+               </Text>
+             </View>
+             <View style={{ gap: 6 }}>
+               <TouchableOpacity style={s.callBtn} onPress={() => callCustomer(activeRide.phone)}>
+                 <Text style={s.callBtnText}>📞 اتصال</Text>
+               </TouchableOpacity>
+               <TouchableOpacity style={[s.callBtn, { backgroundColor: '#4A90E2' }]} onPress={markArrived}>
+                 <Text style={s.callBtnText}>📍 وصلت</Text>
+               </TouchableOpacity>
+               <TouchableOpacity style={s.finishBtn} onPress={finishRide}>
+                 <Text style={s.finishBtnText}>إنهاء</Text>
                </TouchableOpacity>
              </View>
            </View>
-         </View>
-       );
-     })()}
+         )}
 
-     {!activeRide && !selectedRequest && (
-       <View style={s.miniListWrap}>
-         <Text style={s.listHeader}>
-           {!isOnline ? '🔴 أنت غير متصل' : requests.length > 0 ? `📦 ${requests.length} طلبات متاحة` : '📭 لا توجد طلبات'}
-         </Text>
-         {requests.map(req => {
-           const rec          = customers.find(c => c.phone === req.phone);
-           const cmp          = rec?.complaints ?? 0;
-           const isThiefLvl2  = rec?.status === 'thief';
-           const isBadLvl1    = rec?.status === 'bad';
+         {!activeRide && selectedRequest && !detailRequest && (() => {
+           const rec        = customers.find(c => c.phone === selectedRequest.phone);
+           const complaints  = rec?.complaints ?? 0;
+           const isThiefLvl  = rec?.status === 'thief';
+           const isBadLvl    = rec?.status === 'bad';
+           const bannerMsg   = isThiefLvl
+             ? `🚨 سارق — بلّغ عنه ${complaints} سائقين`
+             : isBadLvl ? `⚠️ سلوك سيئ — بلّغ عنه سائق واحد` : null;
            return (
-             <TouchableOpacity key={req.id}
-               style={[s.miniListRow,
-                 isThiefLvl2 && { borderRightWidth: 3, borderRightColor: '#ef4444' },
-                 isBadLvl1 && !isThiefLvl2 && { borderRightWidth: 3, borderRightColor: '#f97316' },
-               ]}
-               onPress={() => openDetail(req)}>
-               <View style={s.avatar}>
-                 <Text style={s.avatarEmoji}>{isThiefLvl2 ? '🚨' : isBadLvl1 ? '⚠️' : '🙂'}</Text>
+             <View style={[s.miniCard, isThiefLvl && { borderTopColor: '#ef4444', borderTopWidth: 3 }]}>
+               {bannerMsg && (
+                 <View style={[s.thiefBanner, isBadLvl && !isThiefLvl && { backgroundColor: '#7c2d12' }]}>
+                   <Text style={s.thiefBannerTxt}>{bannerMsg}</Text>
+                 </View>
+               )}
+               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: bannerMsg ? 8 : 0 }}>
+                 <View style={s.avatar}><Text style={s.avatarEmoji}>{isThiefLvl ? '🚨' : isBadLvl ? '⚠️' : '🙂'}</Text></View>
+                 <View style={{ flex: 1 }}>
+                   <Text style={s.miniName}>{selectedRequest.customerName}</Text>
+                   <Text style={s.miniRoute} numberOfLines={1}>
+                     {selectedRequest.pickupAddress} → {selectedRequest.destination}
+                   </Text>
+                   <View style={s.ratingRow}>
+                     <Text style={s.star}>★</Text>
+                     <Text style={s.ratingVal}>{getCustomerAvgRating(selectedRequest.phone).avg.toFixed(1)}</Text>
+                     <Text style={s.tripCount}> ({rec?.trips ?? 0} رحلة)</Text>
+                   </View>
+                 </View>
+                 <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                   <Text style={s.miniPrice}>{selectedRequest.price} DZD</Text>
+                   {selectedRequest.price >= selectedRequest.suggestedPrice && (
+                     <Text style={s.fairPriceTag}>✅ سعر عادل</Text>
+                   )}
+                   <TouchableOpacity style={s.viewDetailBtn} onPress={() => openDetail(selectedRequest)}>
+                     <Text style={s.viewDetailText}>التفاصيل ›</Text>
+                   </TouchableOpacity>
+                 </View>
                </View>
-               <View style={{ flex: 1 }}>
-                 <Text style={s.miniName}>{req.customerName}</Text>
-                 <Text style={s.miniRoute} numberOfLines={1}>
-                   {req.pickupAddress} → {req.destination}
-                 </Text>
-                 {isThiefLvl2 && <Text style={s.thiefTag}>🚨 سارق — بلّغ عنه {cmp} سائقين</Text>}
-                 {isBadLvl1 && !isThiefLvl2 && <Text style={[s.thiefTag, { color: '#f97316' }]}>⚠️ سلوك سيئ — بلّغة سائق واحد</Text>}
-               </View>
-               <View style={{ alignItems: 'flex-end' }}>
-                 <Text style={s.miniPrice}>{req.price} DZD</Text>
-                 {req.price >= req.suggestedPrice && (
-                   <Text style={s.fairPriceTag}>✅ عادل</Text>
-                 )}
-               </View>
-             </TouchableOpacity>
+             </View>
            );
-         })}
-       </View>
+         })()}
+       </>
      )}
 
      <Modal visible={!!detailRequest} transparent={false} animationType="slide">
@@ -951,7 +1143,7 @@ export default function AppDriver() {
                </View>
              )}
 
-             <ScrollView style={s.detailSheet} contentContainerStyle={{ paddingBottom: 36 }}>
+             <ScrollView style={s.detailSheet} contentContainerStyle={{ paddingBottom: 20 }}>
                {(isThiefLvl || isBadLvl) && (
                  <View style={[s.detailThiefAlert, isBadLvl && !isThiefLvl && { backgroundColor: '#7c2d12' }]}>
                    <Text style={s.detailThiefIcon}>{isThiefLvl ? '🚨' : '⚠️'}</Text>
@@ -984,8 +1176,8 @@ export default function AppDriver() {
                    <Text style={s.activePhone}>📞 {detailRequest.phone}</Text>
                    <View style={s.ratingRow}>
                      <Text style={s.star}>★</Text>
-                     <Text style={s.ratingVal}>{detailRequest.customerRating.toFixed(2)}</Text>
-                     <Text style={s.tripCount}> ({detailRequest.customerTrips})</Text>
+                     <Text style={s.ratingVal}>{getCustomerAvgRating(detailRequest.phone).avg.toFixed(1)}</Text>
+                     <Text style={s.tripCount}> ({record?.trips ?? 0} رحلة)</Text>
                    </View>
                    {cfg && (
                      <View style={[s.statusBadge, { backgroundColor: cfg.bg, borderColor: cfg.color + '66' }]}>
@@ -1025,7 +1217,7 @@ export default function AppDriver() {
 
                <View style={s.divider} />
 
-               <Text style={s.proposeLabel}>الزبون طلب {detailRequest.price} DZD — اقترح سعرك (زيادة أو نقصان)</Text>
+               <Text style={s.proposeLabel}>الزبون طلب {detailRequest.price} DZD — اقترح سعرك</Text>
                <View style={s.proposeRow}>
                  <TouchableOpacity style={s.pmBtn}
                    onPress={() => setProposedPrice(p => Math.max(50, p - 10))}>
@@ -1047,7 +1239,9 @@ export default function AppDriver() {
                    <Text style={s.pmBtnText}>+</Text>
                  </TouchableOpacity>
                </View>
+             </ScrollView>
 
+             <View style={s.stickyFooter}>
                <TouchableOpacity
                  style={[s.acceptBigBtn, isThiefLvl && { backgroundColor: '#7f1d1d' }]}
                  onPress={() => proposePrice(detailRequest, proposedPrice)}>
@@ -1055,11 +1249,10 @@ export default function AppDriver() {
                    {isThiefLvl ? '⚠️ إرسال العرض رغم التحذير' : `إرسال العرض — ${proposedPrice} DZD`}
                  </Text>
                </TouchableOpacity>
-
                <TouchableOpacity style={s.fermerBtn} onPress={closeDetail}>
                  <Text style={s.fermerText}>إغلاق  /  Fermer</Text>
                </TouchableOpacity>
-             </ScrollView>
+             </View>
            </View>
          );
        })()}
@@ -1089,10 +1282,22 @@ export default function AppDriver() {
          <View style={s.drawerHeader}>
            <Text style={s.drawerAppName}>Taxi Moto DZ</Text>
            <Text style={s.drawerSubtitle}>مرحباً {name} 🏍️</Text>
-           <View style={s.drawerEarnings}>
-             <Text style={s.drawerEarningsLbl}>أرباح اليوم</Text>
-             <Text style={s.drawerEarningsVal}>{todayEarnings} DZD</Text>
-             <Text style={s.drawerEarningsLbl}>{todayRides} رحلة</Text>
+         </View>
+
+         <View style={s.drawerStatsCard}>
+           <View style={s.drawerStatItem}>
+             <Text style={s.drawerStatVal}>{todayRides}</Text>
+             <Text style={s.drawerStatLabel}>رحلات</Text>
+           </View>
+           <View style={s.drawerStatDivider} />
+           <View style={s.drawerStatItem}>
+             <Text style={[s.drawerStatVal, { color: '#E8B84B' }]}>{todayEarnings}</Text>
+             <Text style={s.drawerStatLabel}>أرباح اليوم (DZD)</Text>
+           </View>
+           <View style={s.drawerStatDivider} />
+           <View style={s.drawerStatItem}>
+             <Text style={[s.drawerStatVal, thiefCount > 0 && { color: '#ef4444' }]}>{thiefCount}</Text>
+             <Text style={s.drawerStatLabel}>سارقون</Text>
            </View>
          </View>
 
@@ -1197,25 +1402,31 @@ const ch = StyleSheet.create({
 
 const s = StyleSheet.create({
  loadingWrap:      { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#111' },
- container:        { flex: 1 },
+ container:        { flex: 1, backgroundColor: '#111' },
  fullMap:          { width: '100%', height: '100%' },
 
- header:           { position: 'absolute', top: 48, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16 },
+ radarScreen:      { flex: 1, backgroundColor: '#14181f' },
+ radarWrap:        { alignItems: 'center', marginTop: 100, marginBottom: 8 },
+ radarHint:        { color: '#8E8E93', fontSize: 13, textAlign: 'center', marginTop: 14, paddingHorizontal: 40 },
+ radarCount:       { color: '#8BC900', fontSize: 14, fontWeight: '800', textAlign: 'center', marginTop: 14 },
+ requestListWrap:  { flex: 1, paddingHorizontal: 14, marginTop: 6 },
+ orderCard:        { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#1C1C1E', borderRadius: 16, padding: 12, marginBottom: 10, borderWidth: 1, borderColor: '#2C2C2E' },
+ orderDistance:    { fontSize: 11, color: '#4A90E2', fontWeight: '700', marginVertical: 1 },
+ goMapBtn:         { position: 'absolute', bottom: 16, left: 16, right: 16, backgroundColor: '#1F2A40', borderRadius: 16, paddingVertical: 15, alignItems: 'center', borderWidth: 1.5, borderColor: '#E8B84B' },
+ goMapBtnText:     { color: '#E8B84B', fontSize: 14, fontWeight: '800' },
+ backToRadarBtn:   { position: 'absolute', top: 100, alignSelf: 'center', backgroundColor: '#1F2A40', borderRadius: 20, paddingVertical: 10, paddingHorizontal: 18, borderWidth: 1.5, borderColor: '#E8B84B', elevation: 6 },
+ backToRadarText:  { color: '#E8B84B', fontSize: 13, fontWeight: '800' },
+
+ header:           { position: 'absolute', top: 48, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, zIndex: 5 },
  iconBtn:          { width: 42, height: 42, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff', borderRadius: 10, elevation: 4 },
+ iconBtnPlaceholder: { width: 42, height: 42 },
  menuIcon:         { fontSize: 20, color: '#283447' },
 
- statsBar:         { position: 'absolute', top: 100, left: 12, right: 12, backgroundColor: '#1C1C1Eee', borderRadius: 14, flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 16, elevation: 8, borderWidth: 1, borderColor: '#2C2C2E' },
- statItem:         { flex: 1, alignItems: 'center' },
- statVal:          { fontSize: 16, fontWeight: '900', color: '#FFF', marginBottom: 1 },
- statSuffix:       { fontSize: 11, fontWeight: '600' },
- statLabel:        { fontSize: 10, color: '#8E8E93', fontWeight: '600' },
- statDivider:      { width: 1, height: 32, backgroundColor: '#3A3A3C' },
-
- toastStack:       { position: 'absolute', top: 158, left: 16, right: 16, gap: 6, zIndex: 999 },
+ toastStack:       { position: 'absolute', top: 100, left: 16, right: 16, gap: 6, zIndex: 999 },
  toast:            { borderRadius: 12, padding: 12, paddingHorizontal: 16, elevation: 10 },
  toastText:        { color: '#FFF', fontSize: 13, fontWeight: '700', textAlign: 'right' },
 
- activeCard:       { position: 'absolute', top: 162, left: 12, right: 12, backgroundColor: '#1C1C1E', borderRadius: 16, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 10, elevation: 10, borderWidth: 1.5, borderColor: '#E8B84B' },
+ activeCard:       { position: 'absolute', top: 100, left: 12, right: 12, backgroundColor: '#1C1C1E', borderRadius: 16, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 10, elevation: 10, borderWidth: 1.5, borderColor: '#E8B84B' },
  activePhone:      { fontSize: 13, color: '#E8B84B', fontWeight: '700', marginVertical: 2 },
  callBtn:          { backgroundColor: '#27ae60', borderRadius: 8, paddingVertical: 6, paddingHorizontal: 10 },
  callBtnText:      { color: '#FFF', fontSize: 12, fontWeight: '800' },
@@ -1229,11 +1440,8 @@ const s = StyleSheet.create({
  viewDetailBtn:    { backgroundColor: '#E8B84B', borderRadius: 8, paddingVertical: 5, paddingHorizontal: 12 },
  viewDetailText:   { fontSize: 12, fontWeight: '700', color: '#1a1a1a' },
 
- miniListWrap:     { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#1C1C1E', borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingVertical: 12, paddingHorizontal: 16, elevation: 20 },
- listHeader:       { fontSize: 13, fontWeight: '800', color: '#8E8E93', marginBottom: 6, textAlign: 'right' },
- miniListRow:      { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#2C2C2E', paddingRight: 6 },
-
- avatar:           { width: 48, height: 48, borderRadius: 24, backgroundColor: '#2C2C2E', justifyContent: 'center', alignItems: 'center' },
+ avatar:           { width: 48, height: 48, borderRadius: 24, backgroundColor: '#2C2C2E', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
+ avatarPhoto:      { width: '100%', height: '100%' },
  avatarEmoji:      { fontSize: 26 },
  miniName:         { fontSize: 14, fontWeight: '700', color: '#FFF', marginBottom: 2 },
  miniRoute:        { fontSize: 12, color: '#8E8E93' },
@@ -1250,10 +1458,10 @@ const s = StyleSheet.create({
  statusBadgeTxt:   { fontSize: 12, fontWeight: '800' },
 
  detailContainer:  { flex: 1, backgroundColor: '#1C1C1E' },
- detailMap:        { width: '100%', height: 310 },
+ detailMap:        { width: '100%', height: 280 },
  detailTitleBar:   { position: 'absolute', top: 44, left: 0, right: 0, alignItems: 'center' },
  detailTitle:      { fontSize: 20, fontWeight: '900', color: '#FFF', textShadowColor: 'rgba(0,0,0,0.9)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 5 },
- routeLoadingBadge:{ position: 'absolute', top: 318, alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#2C2C2E', paddingHorizontal: 14, paddingVertical: 7, borderRadius: 14 },
+ routeLoadingBadge:{ position: 'absolute', top: 288, alignSelf: 'center', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#2C2C2E', paddingHorizontal: 14, paddingVertical: 7, borderRadius: 14 },
  routeLoadingText: { fontSize: 12, color: '#E8B84B' },
  detailSheet:      { flex: 1, paddingHorizontal: 18, paddingTop: 20 },
  cardRow:          { flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 14 },
@@ -1272,33 +1480,36 @@ const s = StyleSheet.create({
  detailThiefNote:  { fontSize: 12, color: '#fecaca' },
  detailThiefReporter: { fontSize: 11, color: '#f87171', marginTop: 3, fontStyle: 'italic' },
 
- acceptBigBtn:     { backgroundColor: '#F57C00', borderRadius: 16, paddingVertical: 16, alignItems: 'center', marginBottom: 18 },
+ stickyFooter:     { paddingHorizontal: 18, paddingTop: 12, paddingBottom: 28, backgroundColor: '#1C1C1E', borderTopWidth: 1, borderTopColor: '#2C2C2E', elevation: 30 },
+ acceptBigBtn:     { backgroundColor: '#F57C00', borderRadius: 16, paddingVertical: 17, alignItems: 'center', minHeight: 56, justifyContent: 'center' },
  acceptBigText:    { fontSize: 17, fontWeight: '900', color: '#FFF' },
  proposeLabel:     { fontSize: 14, color: '#8E8E93', textAlign: 'center', marginBottom: 12 },
- proposeRow:       { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 14 },
+ proposeRow:       { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
  pmBtn:            { width: 40, height: 40, borderRadius: 20, backgroundColor: '#3A3A3C', justifyContent: 'center', alignItems: 'center' },
  pmBtnText:        { fontSize: 22, fontWeight: '900', color: '#FFF' },
  priceChip:        { flex: 1, paddingVertical: 11, borderRadius: 12, backgroundColor: '#2C2C2E', alignItems: 'center' },
  priceChipActive:  { backgroundColor: '#3A3A3C', borderWidth: 1.5, borderColor: '#E8B84B' },
  priceChipText:    { fontSize: 12, fontWeight: '700', color: '#FFF' },
- fermerBtn:        { alignItems: 'center', paddingVertical: 12 },
+ fermerBtn:        { alignItems: 'center', paddingVertical: 10 },
  fermerText:       { fontSize: 13, color: '#8E8E93', fontWeight: '600' },
 
  backdrop:         { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.55)' },
- drawer:           { position: 'absolute', top: 0, left: 0, bottom: 0, width: 270, backgroundColor: '#fff', elevation: 20 },
+ drawer:           { position: 'absolute', top: 0, left: 0, bottom: 0, width: 280, backgroundColor: '#fff', elevation: 20 },
  drawerHeader:     { backgroundColor: '#1F2A40', padding: 24, alignItems: 'center', paddingTop: 56 },
  drawerAppName:    { color: '#E8B84B', fontSize: 18, fontWeight: '900' },
- drawerSubtitle:   { color: '#FFF', fontSize: 14, marginTop: 4, marginBottom: 14 },
- drawerEarnings:   { backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 12, padding: 12 },
- drawerEarningsLbl:{ fontSize: 11, color: '#8E8E93' },
- drawerEarningsVal:{ fontSize: 20, fontWeight: '900', color: '#E8B84B', marginVertical: 2 },
- drawerBody:       { flex: 1, paddingTop: 10 },
+ drawerSubtitle:   { color: '#FFF', fontSize: 14, marginTop: 4 },
+ drawerStatsCard:  { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0EDE8', marginHorizontal: 16, marginTop: 14, borderRadius: 14, paddingVertical: 14 },
+ drawerStatItem:   { flex: 1, alignItems: 'center' },
+ drawerStatVal:    { fontSize: 17, fontWeight: '900', color: '#283447' },
+ drawerStatLabel:  { fontSize: 10, color: '#8E8E93', fontWeight: '600', marginTop: 2, textAlign: 'center' },
+ drawerStatDivider:{ width: 1, height: 30, backgroundColor: '#D9D4CB' },
+ drawerBody:       { flex: 1, paddingTop: 14 },
  menuItem:         { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, paddingHorizontal: 22, gap: 14 },
  menuEmoji:        { fontSize: 22 },
- menuItemText:     { fontSize: 15, color: '#FFF', fontWeight: '600' },
- menuDivider:      { height: 1, backgroundColor: '#2C2C2E', marginHorizontal: 20 },
- drawerThiefBadge: { backgroundColor: '#7f1d1d', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 3 },
- drawerThiefBadgeTxt: { color: '#fecaca', fontSize: 11, fontWeight: '800' },
- closeDrawerBtn:   { margin: 20, backgroundColor: '#2C2C2E', borderRadius: 12, padding: 14, alignItems: 'center' },
- closeDrawerText:  { color: '#FFF', fontWeight: '700', fontSize: 15 },
+ menuItemText:     { fontSize: 15, color: '#283447', fontWeight: '600' },
+ menuDivider:      { height: 1, backgroundColor: '#F0EDE8', marginHorizontal: 20 },
+ drawerThiefBadge: { backgroundColor: '#fef2f2', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 3 },
+ drawerThiefBadgeTxt: { color: '#c0392b', fontSize: 11, fontWeight: '800' },
+ closeDrawerBtn:   { margin: 20, backgroundColor: '#F0EDE8', borderRadius: 12, padding: 14, alignItems: 'center' },
+ closeDrawerText:  { color: '#283447', fontWeight: '700', fontSize: 15 },
 });
