@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import RatingModal, { RatingStatus } from '../components/RatingModal';
+import { registerForPushNotificationsAsync } from '../constants/pushNotifications';
 import { useLanguage, type Lang } from '../contexts/LanguageContext';
 import { auth, db } from '../utils/firebase';
 
@@ -321,6 +322,16 @@ function stripLatinAccents(s: string): string {
  return s.split('').map((ch) => LATIN_ACCENT_MAP[ch] ?? ch).join('');
 }
 
+// يزيل أي اقتراح مكان مكرر (نفس place_id) قد يظهر مرتين — مرة من البحث النصي ومرة من الأماكن المشهورة القريبة
+function dedupeSuggestions(list: PlaceSuggestion[]): PlaceSuggestion[] {
+  const seen = new Set<string>();
+  return list.filter((p) => {
+    if (seen.has(p.id)) return false;
+    seen.add(p.id);
+    return true;
+  });
+}
+
 function normalizeQuery(q: string): string {
  let s = stripLatinAccents(q.trim().toLowerCase());
  s = s.replace(/[\u064B-\u065F\u0670]/g, '');
@@ -571,6 +582,10 @@ export default function AppCustomer() {
  const [stage,        setStage]        = useState<Stage>('idle');
  const [location,     setLocation]     = useState<LatLng | null>(null);
  const [currentPlaceName, setCurrentPlaceName] = useState<string>(ct.myLocation);
+ const [pickupText,   setPickupText]   = useState(ct.myLocation); // يظهر فوراً، ثم يُستبدل باسم الموقع الحقيقي بمجرد تحديده
+ const [pickupCoords, setPickupCoords] = useState<LatLng | null>(null); // null = استخدم موقعي GPS الحالي فعلياً
+ const [pickupManuallyEdited, setPickupManuallyEdited] = useState(false);
+ const [searchTarget, setSearchTarget] = useState<'pickup' | 'destination'>('destination');
  const [destination,  setDestination]  = useState('');
  const [destCoords,   setDestCoords]   = useState<LatLng | null>(null);
  const [drivers,      setDrivers]      = useState<Driver[]>([]);
@@ -653,6 +668,7 @@ export default function AppCustomer() {
          setUserPhone(data.phone || '');
          setPhotoURL(data.photoURL || null);
          setChecking(false);
+         registerForPushNotificationsAsync('users').catch(() => {});
        } catch {
          // فشل التحميل (غالباً انقطاع إنترنت مؤقت) — أعد المحاولة تلقائياً بعد 3 ثوانٍ
          if (!cancelled) setTimeout(loadUserData, 3000);
@@ -675,7 +691,10 @@ export default function AppCustomer() {
        : { latitude: 36.7538, longitude: 3.0588 };
      setLocation(newLocation);
      reverseGeocode(newLocation.latitude, newLocation.longitude).then((name) => {
-       if (name) setCurrentPlaceName(name);
+       if (name) {
+         setCurrentPlaceName(name);
+         if (!pickupManuallyEdited) setPickupText(name); // تعبئة تلقائية فقط إن لم يعدّل الزبون الحقل بنفسه
+       }
      });
      if (pendingQueryRef.current.trim().length >= 2) {
        performSearch(pendingQueryRef.current, newLocation);
@@ -843,11 +862,12 @@ export default function AppCustomer() {
      const key = normalizeQuery(text);
      const cached = await getCachedPlaces(key);
      if (cached && cached.length > 0) {
-       setSuggestions(cached);
-       cachePlaces(key, text, cached);
+       const unique = dedupeSuggestions(cached);
+       setSuggestions(unique);
+       cachePlaces(key, text, unique);
        return;
      }
-     const results = await searchPlacesGoogle(text, currentLocation);
+     const results = dedupeSuggestions(await searchPlacesGoogle(text, currentLocation));
      setSuggestions(results);
      if (results.length > 0) cachePlaces(key, text, results);
    } catch {
@@ -859,6 +879,7 @@ export default function AppCustomer() {
  };
 
  const onDestinationChange = (text: string) => {
+   setSearchTarget('destination');
    setDestination(text);
    setSelectedDestCoords(null);
    setSuggestedPrice(null);
@@ -884,8 +905,44 @@ export default function AppCustomer() {
    }, 450);
  };
 
+ // نفس منطق حقل الوجهة، لكن لنقطة الانطلاق — تسمح للزبون بكتابة أي مكان بدل الاكتفاء بموقعه GPS الحالي فقط
+ const onPickupChange = (text: string) => {
+   setSearchTarget('pickup');
+   setPickupText(text);
+   setPickupCoords(null);
+   setPickupManuallyEdited(true);
+   setSearchAttempted(false);
+   if (debounceRef.current) clearTimeout(debounceRef.current);
+
+   if (text.trim().length < 2) {
+     setSuggestions([]);
+     pendingQueryRef.current = '';
+     return;
+   }
+
+   pendingQueryRef.current = text;
+
+   if (!location) {
+     setSuggestLoading(true);
+     return;
+   }
+
+   debounceRef.current = setTimeout(() => {
+     performSearch(text, location);
+   }, 450);
+ };
+
+ // إعادة نقطة الانطلاق لموقع GPS الحقيقي الحالي بضغطة واحدة
+ const resetPickupToCurrentLocation = () => {
+   setPickupText(currentPlaceName);
+   setPickupCoords(null);
+   setPickupManuallyEdited(false);
+   setSuggestions([]);
+ };
+
  const pickSuggestion = async (p: PlaceSuggestion) => {
-   setDestination(p.mainText);
+   const target = searchTarget;
+   if (target === 'pickup') { setPickupText(p.mainText); } else { setDestination(p.mainText); }
    setSuggestions([]);
    setSearchAttempted(false);
    pendingQueryRef.current = '';
@@ -895,16 +952,29 @@ export default function AppCustomer() {
    const coords = await fetchPlaceDetails(p.id);
    setSuggestLoading(false);
 
-   if (coords) {
-     setSelectedDestCoords(coords);
-     if (location) {
-       const distKm = haversineKm(location.latitude, location.longitude, coords.latitude, coords.longitude);
+   if (!coords) {
+     Alert.alert(ct.error, ct.failedResolvePlace);
+     return;
+   }
+
+   if (target === 'pickup') {
+     setPickupCoords(coords);
+     // إعادة حساب السعر إذا كانت الوجهة محددة مسبقاً — المسافة الحقيقية تغيّرت بتغيّر نقطة الانطلاق
+     if (selectedDestCoords) {
+       const distKm = haversineKm(coords.latitude, coords.longitude, selectedDestCoords.latitude, selectedDestCoords.longitude);
        const price = computePrice(distKm);
        setSuggestedPrice(price);
        setCustomerPrice(price);
      }
    } else {
-     Alert.alert(ct.error, ct.failedResolvePlace);
+     setSelectedDestCoords(coords);
+     const originPoint = pickupCoords ?? location;
+     if (originPoint) {
+       const distKm = haversineKm(originPoint.latitude, originPoint.longitude, coords.latitude, coords.longitude);
+       const price = computePrice(distKm);
+       setSuggestedPrice(price);
+       setCustomerPrice(price);
+     }
    }
  };
 
@@ -923,17 +993,24 @@ export default function AppCustomer() {
    if (!selectedDestCoords) {
      return Alert.alert(ct.error, ct.pickFromSuggestions);
    }
+   // إذا عدّل الزبون نقطة الانطلاق يدوياً لكن لم يختر اقتراحاً فعلياً، لا نملك إحداثيات دقيقة له
+   if (pickupManuallyEdited && !pickupCoords) {
+     return Alert.alert(ct.error, ct.pickFromSuggestions);
+   }
    if (!location || !auth.currentUser) return;
    setStage('searching');
    setSuggestions([]);
 
+   const origin: LatLng = pickupCoords ?? location; // نقطة الانطلاق الفعلية — مخصصة أو موقعي الحالي
+   const originAddress = pickupCoords ? pickupText : currentPlaceName;
+
    const dest: LatLng = selectedDestCoords;
    setDestCoords(dest);
 
-   const coords = await fetchRoute(location.latitude, location.longitude, dest.latitude, dest.longitude);
+   const coords = await fetchRoute(origin.latitude, origin.longitude, dest.latitude, dest.longitude);
    setRouteCoords(coords);
 
-   const distKm = haversineKm(location.latitude, location.longitude, dest.latitude, dest.longitude);
+   const distKm = haversineKm(origin.latitude, origin.longitude, dest.latitude, dest.longitude);
    const finalSuggested = suggestedPrice ?? computePrice(distKm);
    const finalPrice     = customerPrice  ?? finalSuggested;
 
@@ -942,9 +1019,9 @@ export default function AppCustomer() {
        customerId:      auth.currentUser.uid,
        customerName:    userName,
        customerPhone:   userPhone,
-       pickupLat:       location.latitude,
-       pickupLng:       location.longitude,
-       pickupAddress:   currentPlaceName,
+       pickupLat:       origin.latitude,
+       pickupLng:       origin.longitude,
+       pickupAddress:   originAddress,
        destLat:         dest.latitude,
        destLng:         dest.longitude,
        destination,
@@ -962,7 +1039,7 @@ export default function AppCustomer() {
    }
 
    if (mapRef.current) {
-     mapRef.current.animateToRegion(regionFor([location, dest]), 800);
+     mapRef.current.animateToRegion(regionFor([origin, dest]), 800);
    }
  };
 
@@ -1130,7 +1207,20 @@ export default function AppCustomer() {
          <Text style={[s.sheetTitle, { textAlign: isRTL ? 'right' : 'left' }]}>{ct.whereTo}</Text>
          <View style={[s.inputWrap, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
            <Text style={s.inputIcon}>📍</Text>
-           <Text style={[s.inputFixed, { textAlign: isRTL ? 'right' : 'left' }]} numberOfLines={1}>{currentPlaceName}</Text>
+           <TextInput
+             style={s.input}
+             placeholder={ct.myLocation}
+             placeholderTextColor="#bbb"
+             value={pickupText}
+             onChangeText={onPickupChange}
+             onFocus={() => setSearchTarget('pickup')}
+             textAlign={isRTL ? 'right' : 'left'}
+           />
+           {pickupManuallyEdited && (
+             <TouchableOpacity onPress={resetPickupToCurrentLocation}>
+               <Text style={{ fontSize: 18 }}>🎯</Text>
+             </TouchableOpacity>
+           )}
          </View>
          <View style={[s.inputWrap, { flexDirection: isRTL ? 'row-reverse' : 'row' }]}>
            <Text style={s.inputIcon}>🎯</Text>
@@ -1140,6 +1230,7 @@ export default function AppCustomer() {
              placeholderTextColor="#bbb"
              value={destination}
              onChangeText={onDestinationChange}
+             onFocus={() => setSearchTarget('destination')}
              textAlign={isRTL ? 'right' : 'left'}
              returnKeyType="search"
              onSubmitEditing={searchDrivers}

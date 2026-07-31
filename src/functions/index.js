@@ -210,5 +210,28 @@ exports.onDriverKycStatusChange = onDocumentUpdated('drivers/{driverId}', async 
       { driverId, type: 'kyc_rejected' },
     );
   }
+});// ⬇️ أضف هذا المقطع فقط داخل functions/index.js الموجود عندك (بنفس أسلوبك ونفس دالة notify() الموجودة أصلاً)
+// هذا يغطي الحلقة الوحيدة الناقصة: إشعار الزبون فور وصول عرض سعر جديد من سائق،
+// بدل انتظار قبول العرض فقط (الذي عندك إشعار له أصلاً في onRideAccepted)
+
+// ── 6. عرض سعر جديد من سائق (rides/{rideId}/offers/{driverId}) → إشعار فوري للزبون صاحب الطلب ──
+exports.onNewOffer = onDocumentCreated('rides/{rideId}/offers/{driverId}', async (event) => {
+  const offer  = event.data.data();
+  const rideId = event.params.rideId;
+
+  const rideSnap = await db.collection('rides').doc(rideId).get();
+  const ride = rideSnap.data();
+  if (!ride?.customerId) return;
+
+  const customerSnap = await db.collection('users').doc(ride.customerId).get();
+
+  await notify(
+    ride.customerId, customerSnap.data()?.expoPushToken,
+    '🎁 عرض جديد وصلك',
+    `${offer.driverName || 'سائق'} اقترح ${offer.price} DZD`,
+    { rideId, type: 'new_offer' },
+  );
 });
+
+
 

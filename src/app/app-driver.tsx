@@ -15,6 +15,7 @@ import {
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import RadarScope, { RadarPoint } from '../components/RadarScope';
 import RatingModal, { RatingReason, RatingStatus } from '../components/RatingModal';
+import { registerForPushNotificationsAsync } from '../constants/pushNotifications';
 import { auth, db } from '../utils/firebase';
 
 const CUSTOMER_BAD_REASONS: RatingReason[] = [
@@ -396,6 +397,7 @@ export default function AppDriver() {
          setName(data.name || '');
          setPhone(data.phone || '');
          setChecking(false);
+         registerForPushNotificationsAsync('drivers').catch(() => {});
        } catch {
          if (!cancelled) setTimeout(loadDriverData, 3000);
        }
@@ -487,7 +489,7 @@ export default function AppDriver() {
        if (d < nearestKm) nearestKm = d;
      }
      const proximityRatio = Math.min(nearestKm / RADAR_RANGE_KM, 1); // 0 = قريب جداً، 1 = بعيد
-     requestBeepPlayer.volume = Math.max(1 - proximityRatio, 0.35); // كلما اقترب الزبون، ارتفع الصوت
+     requestBeepPlayer.volume = Math.max(1 - proximityRatio * 0.85, 0.45); // فرق واضح: قريب جداً = 1.0، بعيد = 0.45 (بدل فرق ضئيل سابقاً)
      try {
        requestBeepPlayer.seekTo(0);
        requestBeepPlayer.play();
@@ -738,6 +740,17 @@ export default function AppDriver() {
    // arrivedPing يزيد مع كل ضغطة — بهذا تتكرر إشارة الجرس + الاهتزاز عند الزبون في كل مرة، وليس مرة واحدة فقط
    updateDoc(doc(db, 'rides', activeRide.id), { status: 'arrived', arrivedPing: increment(1) }).catch(() => {});
    pushToast('📍 تم إعلام الزبون بوصولك', 'info');
+
+   // تكبير الخريطة عند السائق نفسه أيضاً لحظة الوصول — كانت مفعّلة فقط عند الزبون سابقاً
+   if (location && mainMapRef.current) {
+     mainMapRef.current.animateToRegion(
+       regionForPoints([
+         { latitude: location.lat, longitude: location.lng },
+         { latitude: activeRide.pickupLat, longitude: activeRide.pickupLng },
+       ], 2.2),
+       700,
+     );
+   }
  };
 
  const finishRide = () => {
