@@ -1,8 +1,8 @@
-
+import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 import { useRouter } from 'expo-router';
 import { createUserWithEmailAndPassword, signInWithPhoneNumber } from 'firebase/auth';
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -16,108 +16,114 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
-import { Lang, useLanguage } from '../contexts/LanguageContext.tsx';
-import { auth, db } from '../utils/firebase';
+import { Lang, useLanguage } from '../contexts/LanguageContext';
+import { auth, db, firebaseConfig } from '../utils/firebase';
 
 const translations: Record<Lang, Record<string, string>> = {
   ar: {
-    title:          'إنشاء حساب زبون',
-    subtitle:       'سجل بياناتك وتحقق من رقم هاتفك للبدء',
-    name:           'الاسم الكامل',
-    namePlaceholder:'مثال: أحمد بن علي',
-    phone:          'رقم الهاتف',
-    email:          'البريد الإلكتروني',
-    password:       'كلمة المرور',
-    passwordPh:     'أحرف على الأقل 6',
-    confirmPass:    'تأكيد كلمة المرور',
-    confirmPassPh:  'أعد كتابة كلمة المرور',
-    sendOtp:        'إرسال رمز التحقق (SMS)',
-    otpLabel:       'أدخل رمز التحقق (SMS)',
-    verifyBtn:      'تأكيد الرمز وإنشاء الحساب',
-    reenterPhone:   'إعادة إدخال رقم الهاتف',
-    haveAccount:    'لديك حساب؟ سجل الدخول',
-    errName:        'الرجاء إدخال الاسم الكامل',
-    errPhone:       'رقم الهاتف غير صالح، يجب أن يتكون من 9 أرقام ويبدأ بـ 5 أو 6 أو 7',
-    errEmail:       'البريد الإلكتروني غير صالح',
-    errPassShort:   'كلمة المرور قصيرة جداً',
-    errPassMatch:   'كلمتا المرور غير متطابقتين',
-    errOtpLen:      'الرجاء إدخال رمز التحقق المكون من 6 أرقام بشكل صحيح',
-    errOtpWrong:    'رمز التحقق غير صحيح',
-    errGeneric:     'رمز التحقق غير صحيح أو حدث خطأ ما',
-    sentTitle:      'تم الإرسال',
-    sentMsg:        'تم إرسال رمز التحقق إلى رقم هاتفك عبر الرسائل القصيرة.',
-    errSendTitle:   'خطأ في إرسال الرمز',
-    errSendMsg:     'تعذر إرسال رمز التحقق، تأكد من صحة الرقم.',
-    errTitle:       'خطأ',
+    title: 'إنشاء حساب زبون',
+    subtitle: 'سجل بياناتك وتحقق من رقم هاتفك للبدء',
+    name: 'الاسم الكامل',
+    namePlaceholder: 'مثال: أحمد بن علي',
+    phone: 'رقم الهاتف',
+    email: 'البريد الإلكتروني',
+    password: 'كلمة المرور',
+    passwordPh: 'أحرف على الأقل 6',
+    confirmPass: 'تأكيد كلمة المرور',
+    confirmPassPh: 'أعد كتابة كلمة المرور',
+    sendOtp: 'إرسال رمز التحقق (SMS)',
+    otpLabel: 'أدخل رمز التحقق (SMS)',
+    verifyBtn: 'تأكيد الرمز وإنشاء الحساب',
+    reenterPhone: 'إعادة إدخال رقم الهاتف',
+    haveAccount: 'لديك حساب؟ سجل الدخول',
+    errName: 'الرجاء إدخال الاسم الكامل',
+    errPhone: 'رقم الهاتف غير صالح، يجب أن يتكون من 9 أرقام ويبدأ بـ 5 أو 6 أو 7',
+    errEmail: 'البريد الإلكتروني غير صالح',
+    errPassShort: 'كلمة المرور قصيرة جداً',
+    errPassMatch: 'كلمتا المرور غير متطابقتين',
+    errOtpLen: 'الرجاء إدخال رمز التحقق المكون من 6 أرقام بشكل صحيح',
+    errOtpWrong: 'رمز التحقق غير صحيح',
+    errGeneric: 'رمز التحقق غير صحيح أو حدث خطأ ما',
+    sentTitle: 'تم الإرسال',
+    sentMsg: 'تم إرسال رمز التحقق إلى رقم هاتفك عبر الرسائل القصيرة.',
+    errSendTitle: 'خطأ في إرسال الرمز',
+    errSendMsg: 'تعذر إرسال رمز التحقق، تأكد من صحة الرقم.',
+    errTitle: 'خطأ',
   },
   fr: {
-    title:          'Créer un compte client',
-    subtitle:       'Renseignez vos informations et vérifiez votre numéro pour commencer',
-    name:           'Nom complet',
-    namePlaceholder:'Ex : Ahmed Benali',
-    phone:          'Numéro de téléphone',
-    email:          'Adresse e-mail',
-    password:       'Mot de passe',
-    passwordPh:     '6 caractères minimum',
-    confirmPass:    'Confirmer le mot de passe',
-    confirmPassPh:  'Retapez le mot de passe',
-    sendOtp:        'Envoyer le code (SMS)',
-    otpLabel:       'Entrez le code reçu (SMS)',
-    verifyBtn:      'Valider et créer le compte',
-    reenterPhone:   'Modifier le numéro de téléphone',
-    haveAccount:    'Vous avez un compte ? Connectez-vous',
-    errName:        'Veuillez entrer votre nom complet',
-    errPhone:       'Numéro invalide, il doit contenir 9 chiffres et commencer par 5, 6 ou 7',
-    errEmail:       'Adresse e-mail invalide',
-    errPassShort:   'Mot de passe trop court',
-    errPassMatch:   'Les mots de passe ne correspondent pas',
-    errOtpLen:      'Veuillez entrer le code à 6 chiffres correctement',
-    errOtpWrong:    'Code de vérification incorrect',
-    errGeneric:     'Code incorrect ou une erreur est survenue',
-    sentTitle:      'Envoyé',
-    sentMsg:        'Le code de vérification a été envoyé par SMS à votre numéro.',
-    errSendTitle:   "Erreur d'envoi du code",
-    errSendMsg:     "Impossible d'envoyer le code, vérifiez le numéro.",
-    errTitle:       'Erreur',
+    title: 'Créer un compte client',
+    subtitle: 'Renseignez vos informations et vérifiez votre numéro pour commencer',
+    name: 'Nom complet',
+    namePlaceholder: 'Ex : Ahmed Benali',
+    phone: 'Numéro de téléphone',
+    email: 'Adresse e-mail',
+    password: 'Mot de passe',
+    passwordPh: '6 caractères minimum',
+    confirmPass: 'Confirmer le mot de passe',
+    confirmPassPh: 'Retapez le mot de passe',
+    sendOtp: 'Envoyer le code (SMS)',
+    otpLabel: 'Entrez le code reçu (SMS)',
+    verifyBtn: 'Valider et créer le compte',
+    reenterPhone: 'Modifier le numéro de téléphone',
+    haveAccount: 'Vous avez un compte ? Connectez-vous',
+    errName: 'Veuillez entrer votre nom complet',
+    errPhone: 'Numéro invalide, il doit contenir 9 chiffres et commencer par 5, 6 ou 7',
+    errEmail: 'Adresse e-mail invalide',
+    errPassShort: 'Mot de passe trop court',
+    errPassMatch: 'Les mots de passe ne correspondent pas',
+    errOtpLen: 'Veuillez entrer le code à 6 chiffres correctement',
+    errOtpWrong: 'Code de vérification incorrect',
+    errGeneric: 'Code incorrect ou une erreur est survenue',
+    sentTitle: 'Envoyé',
+    sentMsg: 'Le code de vérification a été envoyé par SMS à votre numéro.',
+    errSendTitle: "Erreur d'envoi du code",
+    errSendMsg: "Impossible d'envoyer le code, vérifiez le numéro.",
+    errTitle: 'Erreur',
   },
   en: {
-    title:          'Create customer account',
-    subtitle:       'Enter your details and verify your phone number to get started',
-    name:           'Full name',
-    namePlaceholder:'e.g. Ahmed Benali',
-    phone:          'Phone number',
-    email:          'Email address',
-    password:       'Password',
-    passwordPh:     'At least 6 characters',
-    confirmPass:    'Confirm password',
-    confirmPassPh:  'Re-enter your password',
-    sendOtp:        'Send verification code (SMS)',
-    otpLabel:       'Enter the verification code (SMS)',
-    verifyBtn:      'Verify code and create account',
-    reenterPhone:   'Re-enter phone number',
-    haveAccount:    'Already have an account? Log in',
-    errName:        'Please enter your full name',
-    errPhone:       'Invalid phone number, it must be 9 digits and start with 5, 6, or 7',
-    errEmail:       'Invalid email address',
-    errPassShort:   'Password is too short',
-    errPassMatch:   'Passwords do not match',
-    errOtpLen:      'Please enter the 6-digit code correctly',
-    errOtpWrong:    'Incorrect verification code',
-    errGeneric:     'Incorrect code or something went wrong',
-    sentTitle:      'Sent',
-    sentMsg:        'The verification code was sent to your phone via SMS.',
-    errSendTitle:   'Error sending code',
-    errSendMsg:     'Could not send the code, check the number.',
-    errTitle:       'Error',
+    title: 'Create customer account',
+    subtitle: 'Enter your details and verify your phone number to get started',
+    name: 'Full name',
+    namePlaceholder: 'e.g. Ahmed Benali',
+    phone: 'Phone number',
+    email: 'Email address',
+    password: 'Password',
+    passwordPh: 'At least 6 characters',
+    confirmPass: 'Confirm password',
+    confirmPassPh: 'Re-enter your password',
+    sendOtp: 'Send verification code (SMS)',
+    otpLabel: 'Enter the verification code (SMS)',
+    verifyBtn: 'Verify code and create account',
+    reenterPhone: 'Re-enter phone number',
+    haveAccount: 'Already have an account? Log in',
+    errName: 'Please enter your full name',
+    errPhone: 'Invalid phone number, it must be 9 digits and start with 5, 6, or 7',
+    errEmail: 'Invalid email address',
+    errPassShort: 'Password is too short',
+    errPassMatch: 'Passwords do not match',
+    errOtpLen: 'Please enter the 6-digit code correctly',
+    errOtpWrong: 'Incorrect verification code',
+    errGeneric: 'Incorrect code or something went wrong',
+    sentTitle: 'Sent',
+    sentMsg: 'The verification code was sent to your phone via SMS.',
+    errSendTitle: 'Error sending code',
+    errSendMsg: 'Could not send the code, check the number.',
+    errTitle: 'Error',
   },
 };
 
 export default function SignupCustomer() {
   const router = useRouter();
   const recaptchaRef = useRef<any>(null);
-  const { lang } = useLanguage(); // ← اللغة الآن مشتركة مع باقي الصفحات
+  const { lang } = useLanguage();
   const T = translations[lang];
   const isRTL = lang === 'ar';
+
+  const [recaptchaReady, setRecaptchaReady] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setRecaptchaReady(true), 1500);
+    return () => clearTimeout(t);
+  }, []);
 
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -125,7 +131,7 @@ export default function SignupCustomer() {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
 
-  // حالات جديدة خاصة بالتحقق عبر SMS
+  // تم تصحيح وتوحيد حالات تخزين ناتج التحقق بشكل سليم
   const [confirmResult, setConfirmResult] = useState<any>(null);
   const [verificationCode, setVerificationCode] = useState('');
   const [loading, setLoading] = useState(false);
@@ -139,36 +145,46 @@ export default function SignupCustomer() {
     return null;
   };
 
-  // الخطوة الأولى: إرسال رمز التحقق SMS إلى رقم الهاتف
   const handleSendOTP = async () => {
     const err = validate();
     if (err) {
       Alert.alert(T.errTitle, err);
       return;
     }
+
+    if (!recaptchaReady || !recaptchaRef.current) {
+      Alert.alert(T.errTitle, isRTL ? 'جاري التحضير، حاول مجدداً بعد لحظة' : 'Preparing, please try again in a moment');
+      return;
+    }
+
     setLoading(true);
     try {
       const fullPhoneNumber = '+213' + phone.trim();
       const confirmation = await signInWithPhoneNumber(auth, fullPhoneNumber, recaptchaRef.current);
+      
+      // حفظ جلسة التحقق بشكل صحيح وسليم
       setConfirmResult(confirmation);
+      
       Alert.alert(T.sentTitle, T.sentMsg);
     } catch (e: any) {
-      console.log(e);
-      Alert.alert(T.errSendTitle, e.message || T.errSendMsg);
+      console.log('REAL ERROR CODE:', e.code, '| MESSAGE:', e.message);
+      Alert.alert(T.errSendTitle, T.errSendMsg);
     }
     setLoading(false);
   };
 
-  // الخطوة الثانية: تأكيد الرمز وإتمام إنشاء الحساب
   const handleVerifyAndSignup = async () => {
-    if (!verificationCode || verificationCode.length < 6) {
+    const cleanCode = verificationCode.replace(/[^0-9]/g, '');
+    console.log('test code:', JSON.stringify(cleanCode));
+
+    if (!cleanCode || cleanCode.length !== 6) {
       Alert.alert(T.errTitle, T.errOtpLen);
       return;
     }
 
     setLoading(true);
     try {
-      await confirmResult.confirm(verificationCode);
+      await confirmResult.confirm(cleanCode);
 
       const res = await createUserWithEmailAndPassword(auth, email.trim(), password);
 
@@ -183,6 +199,7 @@ export default function SignupCustomer() {
 
       router.replace('/customer');
     } catch (e: any) {
+      console.log('REAL ERROR CODE:', e.code, '| MESSAGE:', e.message);
       let msg = T.errGeneric;
       if (e.code === 'auth/invalid-verification-code') {
         msg = T.errOtpWrong;
@@ -195,19 +212,22 @@ export default function SignupCustomer() {
   return (
     <KeyboardAvoidingView
       style={{ flex: 1, backgroundColor: '#E8B84B' }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={0}
     >
-   
+      <FirebaseRecaptchaVerifierModal
+        ref={recaptchaRef}
+        firebaseConfig={firebaseConfig}
+        attemptInvisibleVerification
+      />
 
-      <ScrollView contentContainerStyle={s.scrollContent}>
-
+      <ScrollView contentContainerStyle={s.scrollContent} keyboardShouldPersistTaps="handled">
         <Text style={s.emoji}>👤</Text>
         <Text style={s.title}>{T.title}</Text>
         <Text style={s.subtitle}>{T.subtitle}</Text>
 
         {!confirmResult ? (
           <>
-            {/* حقل الاسم الكامل */}
             <View style={s.inputWrap}>
               <Text style={[s.label, { textAlign: isRTL ? 'right' : 'left' }]}>{T.name}</Text>
               <TextInput
@@ -219,7 +239,6 @@ export default function SignupCustomer() {
               />
             </View>
 
-            {/* حقل رقم الهاتف مع العلم و +213 — يبقى بترتيب LTR دائماً بغض النظر عن اللغة (الأرقام تُقرأ دولياً من اليسار لليمين) */}
             <View style={s.inputWrap}>
               <Text style={[s.label, { textAlign: isRTL ? 'right' : 'left' }]}>{T.phone}</Text>
               <View style={s.phoneContainer}>
@@ -234,7 +253,7 @@ export default function SignupCustomer() {
                   style={s.phoneInput}
                   value={phone}
                   onChangeText={setPhone}
-                  placeholder="552937123"
+                  placeholder="xxxxxxxxx"
                   placeholderTextColor="#888"
                   keyboardType="phone-pad"
                   maxLength={9}
@@ -242,7 +261,6 @@ export default function SignupCustomer() {
               </View>
             </View>
 
-            {/* حقل البريد الإلكتروني */}
             <View style={s.inputWrap}>
               <Text style={[s.label, { textAlign: isRTL ? 'right' : 'left' }]}>{T.email}</Text>
               <TextInput
@@ -256,7 +274,6 @@ export default function SignupCustomer() {
               />
             </View>
 
-            {/* حقل كلمة المرور */}
             <View style={s.inputWrap}>
               <Text style={[s.label, { textAlign: isRTL ? 'right' : 'left' }]}>{T.password}</Text>
               <TextInput
@@ -269,7 +286,6 @@ export default function SignupCustomer() {
               />
             </View>
 
-            {/* حقل تأكيد كلمة المرور */}
             <View style={s.inputWrap}>
               <Text style={[s.label, { textAlign: isRTL ? 'right' : 'left' }]}>{T.confirmPass}</Text>
               <TextInput
@@ -282,7 +298,6 @@ export default function SignupCustomer() {
               />
             </View>
 
-            {/* زر إرسال رمز التحقق */}
             <TouchableOpacity style={s.submitBtn} onPress={handleSendOTP} disabled={loading}>
               {loading ? (
                 <ActivityIndicator color="#E8B84B" />
@@ -293,7 +308,6 @@ export default function SignupCustomer() {
           </>
         ) : (
           <>
-            {/* واجهة إدخال رمز التحقق المستلم */}
             <View style={s.inputWrap}>
               <Text style={[s.label, { textAlign: isRTL ? 'right' : 'left' }]}>{T.otpLabel}</Text>
               <TextInput
@@ -321,18 +335,16 @@ export default function SignupCustomer() {
           </>
         )}
 
-        {/* رابط الانتقال لتسجيل الدخول */}
-        <TouchableOpacity onPress={() => router.push('/login-customer')}>
+        <TouchableOpacity onPress={() => router.push('/login')}>
           <Text style={s.loginLink}>{T.haveAccount}</Text>
         </TouchableOpacity>
-
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const s = StyleSheet.create({
-  scrollContent: { padding: 24, paddingTop: 60, paddingBottom: 40 },
+  scrollContent: { padding: 24, paddingTop: 60, paddingBottom: 220 },
   emoji: { fontSize: 48, textAlign: 'center', marginBottom: 16 },
   title: { fontSize: 22, fontWeight: '900', color: '#1F2A40', textAlign: 'center', marginBottom: 8 },
   subtitle: { fontSize: 13, color: '#1F2A40', textAlign: 'center', marginBottom: 24, opacity: 0.8 },

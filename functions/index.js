@@ -280,3 +280,43 @@ exports.onSupportMessage = onDocumentCreated('support/{msgId}', async (event) =>
   );
 });
 
+exports.onDriverKycStatusChange = onDocumentUpdated('drivers/{driverId}', async (event) => {
+  const before = event.data.before.data();
+  const after  = event.data.after.data();
+  const driverId = event.params.driverId;
+
+  if (before.kyc_status === after.kyc_status) return;
+
+  if (after.kyc_status === 'approved') {
+    await notify(
+      driverId, after.expoPushToken,
+      '🎉 تمت الموافقة على حسابك!', 'يمكنك الآن تسجيل الدخول والبدء باستقبال الرحلات',
+      { driverId, type: 'kyc_approved' },
+    );
+  }
+
+  if (after.kyc_status === 'rejected') {
+    await notify(
+      driverId, after.expoPushToken,
+      '❌ تعذّرت الموافقة على حسابك', 'بطاقة الدراجة أو بياناتك لم تُطابق الشروط. تواصل مع الدعم لمزيد من التفاصيل',
+      { driverId, type: 'kyc_rejected' },
+    );
+  }
+});// ⬇️ أضف هذا المقطع فقط داخل functions/index.js الموجود عندك (بنفس أسلوبك ونفس دالة notify() الموجودة أصلاً)
+exports.onNewOffer = onDocumentCreated('rides/{rideId}/offers/{driverId}', async (event) => {
+  const offer  = event.data.data();
+  const rideId = event.params.rideId;
+
+  const rideSnap = await db.collection('rides').doc(rideId).get();
+  const ride = rideSnap.data();
+  if (!ride?.customerId) return;
+
+  const customerSnap = await db.collection('users').doc(ride.customerId).get();
+
+  await notify(
+    ride.customerId, customerSnap.data()?.expoPushToken,
+    '🎁 عرض جديد وصلك',
+    `${offer.driverName || 'سائق'} اقترح ${offer.price} DZD`,
+    { rideId, type: 'new_offer' },
+  );
+});
