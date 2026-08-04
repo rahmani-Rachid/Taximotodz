@@ -42,3 +42,4 @@ example
 /ios
 /android
 *firebase-adminsdk*.json
+functions/.env

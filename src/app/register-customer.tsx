@@ -1,8 +1,8 @@
-import { FirebaseRecaptchaVerifierModal } from 'expo-firebase-recaptcha';
 import { useRouter } from 'expo-router';
-import { createUserWithEmailAndPassword, signInWithPhoneNumber } from 'firebase/auth';
+import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { useEffect, useRef, useState } from 'react';
+import { httpsCallable } from 'firebase/functions';
+import { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -17,7 +17,7 @@ import {
   View
 } from 'react-native';
 import { Lang, useLanguage } from '../contexts/LanguageContext';
-import { auth, db, firebaseConfig } from '../utils/firebase';
+import { auth, db, functions } from '../utils/firebase';
 
 const translations: Record<Lang, Record<string, string>> = {
   ar: {
@@ -31,8 +31,8 @@ const translations: Record<Lang, Record<string, string>> = {
     passwordPh: 'أحرف على الأقل 6',
     confirmPass: 'تأكيد كلمة المرور',
     confirmPassPh: 'أعد كتابة كلمة المرور',
-    sendOtp: 'إرسال رمز التحقق (SMS)',
-    otpLabel: 'أدخل رمز التحقق (SMS)',
+    sendOtp: 'إرسال رمز التحقق (WhatsApp)',
+    otpLabel: 'أدخل رمز التحقق (WhatsApp)',
     verifyBtn: 'تأكيد الرمز وإنشاء الحساب',
     reenterPhone: 'إعادة إدخال رقم الهاتف',
     haveAccount: 'لديك حساب؟ سجل الدخول',
@@ -43,9 +43,9 @@ const translations: Record<Lang, Record<string, string>> = {
     errPassMatch: 'كلمتا المرور غير متطابقتين',
     errOtpLen: 'الرجاء إدخال رمز التحقق المكون من 6 أرقام بشكل صحيح',
     errOtpWrong: 'رمز التحقق غير صحيح',
-    errGeneric: 'رمز التحقق غير صحيح أو حدث خطأ ما',
+    errGeneric: 'حدث خطأ ما، حاول مجدداً',
     sentTitle: 'تم الإرسال',
-    sentMsg: 'تم إرسال رمز التحقق إلى رقم هاتفك عبر الرسائل القصيرة.',
+    sentMsg: 'تم إرسال رمز التحقق إلى رقم هاتفك عبر WhatsApp.',
     errSendTitle: 'خطأ في إرسال الرمز',
     errSendMsg: 'تعذر إرسال رمز التحقق، تأكد من صحة الرقم.',
     errTitle: 'خطأ',
@@ -61,8 +61,8 @@ const translations: Record<Lang, Record<string, string>> = {
     passwordPh: '6 caractères minimum',
     confirmPass: 'Confirmer le mot de passe',
     confirmPassPh: 'Retapez le mot de passe',
-    sendOtp: 'Envoyer le code (SMS)',
-    otpLabel: 'Entrez le code reçu (SMS)',
+    sendOtp: 'Envoyer le code (WhatsApp)',
+    otpLabel: 'Entrez le code reçu (WhatsApp)',
     verifyBtn: 'Valider et créer le compte',
     reenterPhone: 'Modifier le numéro de téléphone',
     haveAccount: 'Vous avez un compte ? Connectez-vous',
@@ -73,9 +73,9 @@ const translations: Record<Lang, Record<string, string>> = {
     errPassMatch: 'Les mots de passe ne correspondent pas',
     errOtpLen: 'Veuillez entrer le code à 6 chiffres correctement',
     errOtpWrong: 'Code de vérification incorrect',
-    errGeneric: 'Code incorrect ou une erreur est survenue',
+    errGeneric: "Une erreur est survenue, réessayez",
     sentTitle: 'Envoyé',
-    sentMsg: 'Le code de vérification a été envoyé par SMS à votre numéro.',
+    sentMsg: 'Le code de vérification a été envoyé par WhatsApp à votre numéro.',
     errSendTitle: "Erreur d'envoi du code",
     errSendMsg: "Impossible d'envoyer le code, vérifiez le numéro.",
     errTitle: 'Erreur',
@@ -91,8 +91,8 @@ const translations: Record<Lang, Record<string, string>> = {
     passwordPh: 'At least 6 characters',
     confirmPass: 'Confirm password',
     confirmPassPh: 'Re-enter your password',
-    sendOtp: 'Send verification code (SMS)',
-    otpLabel: 'Enter the verification code (SMS)',
+    sendOtp: 'Send verification code (WhatsApp)',
+    otpLabel: 'Enter the verification code (WhatsApp)',
     verifyBtn: 'Verify code and create account',
     reenterPhone: 'Re-enter phone number',
     haveAccount: 'Already have an account? Log in',
@@ -103,9 +103,9 @@ const translations: Record<Lang, Record<string, string>> = {
     errPassMatch: 'Passwords do not match',
     errOtpLen: 'Please enter the 6-digit code correctly',
     errOtpWrong: 'Incorrect verification code',
-    errGeneric: 'Incorrect code or something went wrong',
+    errGeneric: 'Something went wrong, try again',
     sentTitle: 'Sent',
-    sentMsg: 'The verification code was sent to your phone via SMS.',
+    sentMsg: 'The verification code was sent to your phone via WhatsApp.',
     errSendTitle: 'Error sending code',
     errSendMsg: 'Could not send the code, check the number.',
     errTitle: 'Error',
@@ -114,16 +114,9 @@ const translations: Record<Lang, Record<string, string>> = {
 
 export default function SignupCustomer() {
   const router = useRouter();
-  const recaptchaRef = useRef<any>(null);
   const { lang } = useLanguage();
   const T = translations[lang];
   const isRTL = lang === 'ar';
-
-  const [recaptchaReady, setRecaptchaReady] = useState(false);
-  useEffect(() => {
-    const t = setTimeout(() => setRecaptchaReady(true), 1500);
-    return () => clearTimeout(t);
-  }, []);
 
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -131,8 +124,7 @@ export default function SignupCustomer() {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
 
-  // تم تصحيح وتوحيد حالات تخزين ناتج التحقق بشكل سليم
-  const [confirmResult, setConfirmResult] = useState<any>(null);
+  const [otpSent, setOtpSent] = useState(false);
   const [verificationCode, setVerificationCode] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -151,32 +143,21 @@ export default function SignupCustomer() {
       Alert.alert(T.errTitle, err);
       return;
     }
-
-    if (!recaptchaReady || !recaptchaRef.current) {
-      Alert.alert(T.errTitle, isRTL ? 'جاري التحضير، حاول مجدداً بعد لحظة' : 'Preparing, please try again in a moment');
-      return;
-    }
-
     setLoading(true);
     try {
       const fullPhoneNumber = '+213' + phone.trim();
-      const confirmation = await signInWithPhoneNumber(auth, fullPhoneNumber, recaptchaRef.current);
-      
-      // حفظ جلسة التحقق بشكل صحيح وسليم
-      setConfirmResult(confirmation);
-      
+      const requestOtp = httpsCallable(functions, 'requestOtp');
+      await requestOtp({ phone: fullPhoneNumber });
+      setOtpSent(true);
       Alert.alert(T.sentTitle, T.sentMsg);
     } catch (e: any) {
-      console.log('REAL ERROR CODE:', e.code, '| MESSAGE:', e.message);
-      Alert.alert(T.errSendTitle, T.errSendMsg);
+      Alert.alert(T.errSendTitle, e.message || T.errSendMsg);
     }
     setLoading(false);
   };
 
   const handleVerifyAndSignup = async () => {
     const cleanCode = verificationCode.replace(/[^0-9]/g, '');
-    console.log('test code:', JSON.stringify(cleanCode));
-
     if (!cleanCode || cleanCode.length !== 6) {
       Alert.alert(T.errTitle, T.errOtpLen);
       return;
@@ -184,13 +165,15 @@ export default function SignupCustomer() {
 
     setLoading(true);
     try {
-      await confirmResult.confirm(cleanCode);
+      const fullPhoneNumber = '+213' + phone.trim();
+      const verifyOtp = httpsCallable(functions, 'verifyOtp');
+      await verifyOtp({ phone: fullPhoneNumber, code: cleanCode });
 
       const res = await createUserWithEmailAndPassword(auth, email.trim(), password);
 
       await setDoc(doc(db, 'users', res.user.uid), {
         name: name.trim(),
-        phone: '+213' + phone.trim(),
+        phone: fullPhoneNumber,
         email: email.trim(),
         role: 'customer',
         photoURL: null,
@@ -199,11 +182,8 @@ export default function SignupCustomer() {
 
       router.replace('/customer');
     } catch (e: any) {
-      console.log('REAL ERROR CODE:', e.code, '| MESSAGE:', e.message);
-      let msg = T.errGeneric;
-      if (e.code === 'auth/invalid-verification-code') {
-        msg = T.errOtpWrong;
-      }
+      let msg = e.message || T.errGeneric;
+      if (e.code === 'functions/permission-denied') msg = T.errOtpWrong;
       Alert.alert(T.errTitle, msg);
     }
     setLoading(false);
@@ -215,18 +195,13 @@ export default function SignupCustomer() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={0}
     >
-      <FirebaseRecaptchaVerifierModal
-        ref={recaptchaRef}
-        firebaseConfig={firebaseConfig}
-        attemptInvisibleVerification
-      />
-
       <ScrollView contentContainerStyle={s.scrollContent} keyboardShouldPersistTaps="handled">
+
         <Text style={s.emoji}>👤</Text>
         <Text style={s.title}>{T.title}</Text>
         <Text style={s.subtitle}>{T.subtitle}</Text>
 
-        {!confirmResult ? (
+        {!otpSent ? (
           <>
             <View style={s.inputWrap}>
               <Text style={[s.label, { textAlign: isRTL ? 'right' : 'left' }]}>{T.name}</Text>
@@ -253,7 +228,7 @@ export default function SignupCustomer() {
                   style={s.phoneInput}
                   value={phone}
                   onChangeText={setPhone}
-                  placeholder="xxxxxxxxx"
+                  placeholder="552937123"
                   placeholderTextColor="#888"
                   keyboardType="phone-pad"
                   maxLength={9}
@@ -329,7 +304,7 @@ export default function SignupCustomer() {
               )}
             </TouchableOpacity>
 
-            <TouchableOpacity onPress={() => setConfirmResult(null)}>
+            <TouchableOpacity onPress={() => setOtpSent(false)}>
               <Text style={s.loginLink}>{T.reenterPhone}</Text>
             </TouchableOpacity>
           </>
@@ -338,6 +313,7 @@ export default function SignupCustomer() {
         <TouchableOpacity onPress={() => router.push('/login')}>
           <Text style={s.loginLink}>{T.haveAccount}</Text>
         </TouchableOpacity>
+
       </ScrollView>
     </KeyboardAvoidingView>
   );
