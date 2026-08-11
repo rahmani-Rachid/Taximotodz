@@ -317,38 +317,39 @@ exports.onNewOffer = onDocumentCreated('rides/{rideId}/offers/{driverId}', async
 
 // ---------------------------- WhatsApp OTP ----------------------------
 
-const WHATSAPP_TEMPLATE_NAME = 'otp_verify';
-const WHATSAPP_TEMPLATE_LANG = 'ar';
+const WHATSAPP_TEMPLATE_NAME = 'hello_world';
+const WHATSAPP_TEMPLATE_LANG = 'en_US';
 
 async function sendWhatsAppOtp(phoneE164, code) {
-  const token = process.env.WHATSAPP_TOKEN;
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-  if (!token || !phoneNumberId) throw new Error('إعدادات WhatsApp غير مكتملة على الخادم');
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken  = process.env.TWILIO_AUTH_TOKEN;
+  const fromNumber = process.env.TWILIO_PHONE_NUMBER;
 
-  const res = await fetch(`https://graph.facebook.com/v20.0/${phoneNumberId}/messages`, {
+  if (!accountSid || !authToken || !fromNumber) {
+    throw new Error('إعدادات Twilio غير مكتملة على الخادم');
+  }
+
+  const credentials = Buffer.from(accountSid + ':' + authToken).toString('base64');
+
+  const body = new URLSearchParams({
+    To: phoneE164,
+    From: fromNumber,
+    Body: 'رمز التحقق الخاص بك في Taxi Moto DZ هو: ' + code,
+  });
+
+  const res = await fetch('https://api.twilio.com/2010-04-01/Accounts/' + accountSid + '/Messages.json', {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
+      'Authorization': 'Basic ' + credentials,
+      'Content-Type': 'application/x-www-form-urlencoded',
     },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to: phoneE164.replace('+', ''),
-      type: 'template',
-      template: {
-        name: WHATSAPP_TEMPLATE_NAME,
-        language: { code: WHATSAPP_TEMPLATE_LANG },
-        components: [
-          { type: 'body', parameters: [{ type: 'text', text: code }] },
-        ],
-      },
-    }),
+    body: body.toString(),
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    console.error('فشل إرسال WhatsApp:', res.status, text);
-    throw new Error('فشل إرسال رمز التحقق عبر WhatsApp');
+    console.error('فشل إرسال SMS عبر Twilio:', res.status, text);
+    throw new Error('فشل إرسال رمز التحقق عبر SMS');
   }
 }
 

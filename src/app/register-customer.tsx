@@ -1,8 +1,9 @@
+import * as Google from 'expo-auth-session/providers/google';
 import { useRouter } from 'expo-router';
-import { createUserWithEmailAndPassword } from 'firebase/auth';
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { httpsCallable } from 'firebase/functions';
-import { useState } from 'react';
+import * as WebBrowser from 'expo-web-browser';
+import { GoogleAuthProvider, signInWithCredential } from 'firebase/auth';
+import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -17,98 +18,58 @@ import {
   View
 } from 'react-native';
 import { Lang, useLanguage } from '../contexts/LanguageContext';
-import { auth, db, functions } from '../utils/firebase';
+import { auth, db } from '../utils/firebase';
+
+WebBrowser.maybeCompleteAuthSession();
+
+const GOOGLE_ANDROID_CLIENT_ID = '1026634729182-l11dvakm05tn3uk1575a38ljbmpg2uhq.apps.googleusercontent.com';
+const GOOGLE_WEB_CLIENT_ID     = '1026634729182-rdfcpch5fr23r8lscr0lcim7as4mfq8a.apps.googleusercontent.com';
 
 const translations: Record<Lang, Record<string, string>> = {
   ar: {
-    title: 'إنشاء حساب زبون',
-    subtitle: 'سجل بياناتك وتحقق من رقم هاتفك للبدء',
-    name: 'الاسم الكامل',
-    namePlaceholder: 'مثال: أحمد بن علي',
-    phone: 'رقم الهاتف',
-    email: 'البريد الإلكتروني',
-    password: 'كلمة المرور',
-    passwordPh: 'أحرف على الأقل 6',
-    confirmPass: 'تأكيد كلمة المرور',
-    confirmPassPh: 'أعد كتابة كلمة المرور',
-    sendOtp: 'إرسال رمز التحقق (WhatsApp)',
-    otpLabel: 'أدخل رمز التحقق (WhatsApp)',
-    verifyBtn: 'تأكيد الرمز وإنشاء الحساب',
-    reenterPhone: 'إعادة إدخال رقم الهاتف',
-    haveAccount: 'لديك حساب؟ سجل الدخول',
-    errName: 'الرجاء إدخال الاسم الكامل',
-    errPhone: 'رقم الهاتف غير صالح، يجب أن يتكون من 9 أرقام ويبدأ بـ 5 أو 6 أو 7',
-    errEmail: 'البريد الإلكتروني غير صالح',
-    errPassShort: 'كلمة المرور قصيرة جداً',
-    errPassMatch: 'كلمتا المرور غير متطابقتين',
-    errOtpLen: 'الرجاء إدخال رمز التحقق المكون من 6 أرقام بشكل صحيح',
-    errOtpWrong: 'رمز التحقق غير صحيح',
-    errGeneric: 'حدث خطأ ما، حاول مجدداً',
-    sentTitle: 'تم الإرسال',
-    sentMsg: 'تم إرسال رمز التحقق إلى رقم هاتفك عبر WhatsApp.',
-    errSendTitle: 'خطأ في إرسال الرمز',
-    errSendMsg: 'تعذر إرسال رمز التحقق، تأكد من صحة الرقم.',
-    errTitle: 'خطأ',
+    title:          'إنشاء حساب زبون',
+    subtitle:       'سجّل دخولك بحساب Google للبدء',
+    googleBtn:      'المتابعة بحساب Google',
+    phoneTitle:     'أدخل رقم هاتفك',
+    phoneSubtitle:  'مطلوب حتى يتواصل معك السائق مباشرة',
+    phone:          'رقم الهاتف',
+    phoneConfirm:   'أعد كتابة رقم الهاتف للتأكيد',
+    confirmBtn:     'تأكيد وإنشاء الحساب',
+    errPhone:       'رقم الهاتف غير صالح، يجب أن يتكون من 9 أرقام ويبدأ بـ 5 أو 6 أو 7',
+    errPhoneMatch:  'الرقمان غير متطابقين، تحقق مرة أخرى',
+    errTitle:       'خطأ',
+    errGeneric:     'حدث خطأ ما، حاول مجدداً',
+    haveAccount:    'لديك حساب؟ سجل الدخول',
   },
   fr: {
-    title: 'Créer un compte client',
-    subtitle: 'Renseignez vos informations et vérifiez votre numéro pour commencer',
-    name: 'Nom complet',
-    namePlaceholder: 'Ex : Ahmed Benali',
-    phone: 'Numéro de téléphone',
-    email: 'Adresse e-mail',
-    password: 'Mot de passe',
-    passwordPh: '6 caractères minimum',
-    confirmPass: 'Confirmer le mot de passe',
-    confirmPassPh: 'Retapez le mot de passe',
-    sendOtp: 'Envoyer le code (WhatsApp)',
-    otpLabel: 'Entrez le code reçu (WhatsApp)',
-    verifyBtn: 'Valider et créer le compte',
-    reenterPhone: 'Modifier le numéro de téléphone',
-    haveAccount: 'Vous avez un compte ? Connectez-vous',
-    errName: 'Veuillez entrer votre nom complet',
-    errPhone: 'Numéro invalide, il doit contenir 9 chiffres et commencer par 5, 6 ou 7',
-    errEmail: 'Adresse e-mail invalide',
-    errPassShort: 'Mot de passe trop court',
-    errPassMatch: 'Les mots de passe ne correspondent pas',
-    errOtpLen: 'Veuillez entrer le code à 6 chiffres correctement',
-    errOtpWrong: 'Code de vérification incorrect',
-    errGeneric: "Une erreur est survenue, réessayez",
-    sentTitle: 'Envoyé',
-    sentMsg: 'Le code de vérification a été envoyé par WhatsApp à votre numéro.',
-    errSendTitle: "Erreur d'envoi du code",
-    errSendMsg: "Impossible d'envoyer le code, vérifiez le numéro.",
-    errTitle: 'Erreur',
+    title:          'Créer un compte client',
+    subtitle:       'Connectez-vous avec Google pour commencer',
+    googleBtn:      'Continuer avec Google',
+    phoneTitle:     'Entrez votre numéro de téléphone',
+    phoneSubtitle:  'Requis pour que le chauffeur vous contacte directement',
+    phone:          'Numéro de téléphone',
+    phoneConfirm:   'Retapez le numéro pour confirmer',
+    confirmBtn:     'Confirmer et créer le compte',
+    errPhone:       'Numéro invalide, il doit contenir 9 chiffres et commencer par 5, 6 ou 7',
+    errPhoneMatch:  'Les numéros ne correspondent pas, vérifiez à nouveau',
+    errTitle:       'Erreur',
+    errGeneric:     "Une erreur est survenue, réessayez",
+    haveAccount:    'Vous avez un compte ? Connectez-vous',
   },
   en: {
-    title: 'Create customer account',
-    subtitle: 'Enter your details and verify your phone number to get started',
-    name: 'Full name',
-    namePlaceholder: 'e.g. Ahmed Benali',
-    phone: 'Phone number',
-    email: 'Email address',
-    password: 'Password',
-    passwordPh: 'At least 6 characters',
-    confirmPass: 'Confirm password',
-    confirmPassPh: 'Re-enter your password',
-    sendOtp: 'Send verification code (WhatsApp)',
-    otpLabel: 'Enter the verification code (WhatsApp)',
-    verifyBtn: 'Verify code and create account',
-    reenterPhone: 'Re-enter phone number',
-    haveAccount: 'Already have an account? Log in',
-    errName: 'Please enter your full name',
-    errPhone: 'Invalid phone number, it must be 9 digits and start with 5, 6, or 7',
-    errEmail: 'Invalid email address',
-    errPassShort: 'Password is too short',
-    errPassMatch: 'Passwords do not match',
-    errOtpLen: 'Please enter the 6-digit code correctly',
-    errOtpWrong: 'Incorrect verification code',
-    errGeneric: 'Something went wrong, try again',
-    sentTitle: 'Sent',
-    sentMsg: 'The verification code was sent to your phone via WhatsApp.',
-    errSendTitle: 'Error sending code',
-    errSendMsg: 'Could not send the code, check the number.',
-    errTitle: 'Error',
+    title:          'Create customer account',
+    subtitle:       'Sign in with Google to get started',
+    googleBtn:      'Continue with Google',
+    phoneTitle:     'Enter your phone number',
+    phoneSubtitle:  'Required so the driver can contact you directly',
+    phone:          'Phone number',
+    phoneConfirm:   'Re-enter the number to confirm',
+    confirmBtn:     'Confirm and create account',
+    errPhone:       'Invalid phone number, it must be 9 digits and start with 5, 6, or 7',
+    errPhoneMatch:  'The numbers do not match, check again',
+    errTitle:       'Error',
+    errGeneric:     'Something went wrong, try again',
+    haveAccount:    'Already have an account? Log in',
   },
 };
 
@@ -118,73 +79,79 @@ export default function SignupCustomer() {
   const T = translations[lang];
   const isRTL = lang === 'ar';
 
-  const [name, setName] = useState('');
-  const [phone, setPhone] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirm, setConfirm] = useState('');
-
-  const [otpSent, setOtpSent] = useState(false);
-  const [verificationCode, setVerificationCode] = useState('');
   const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState<'google' | 'phone'>('google');
+  const [googleUser, setGoogleUser] = useState<{ uid: string; name: string; email: string; photoURL: string | null } | null>(null);
+  const [phone, setPhone] = useState('');
+  const [phoneConfirm, setPhoneConfirm] = useState('');
 
-  const validate = () => {
-    if (!name.trim()) return T.errName;
-    if (!/^[5-7][0-9]{8}$/.test(phone.trim())) return T.errPhone;
-    if (!/\S+@\S+\.\S+/.test(email.trim())) return T.errEmail;
-    if (password.length < 6) return T.errPassShort;
-    if (password !== confirm) return T.errPassMatch;
-    return null;
-  };
+  const [request, response, promptAsync] = Google.useAuthRequest({
+    androidClientId: GOOGLE_ANDROID_CLIENT_ID,
+    webClientId: GOOGLE_WEB_CLIENT_ID,
+  });
 
-  const handleSendOTP = async () => {
-    const err = validate();
-    if (err) {
-      Alert.alert(T.errTitle, err);
+  useEffect(() => {
+    if (response?.type === 'success') {
+      handleGoogleSuccess(response.authentication?.idToken);
+    } else if (response?.type === 'error') {
+      Alert.alert(T.errTitle, T.errGeneric);
+    }
+  }, [response]);
+
+  const handleGoogleSuccess = async (idToken: string | undefined) => {
+    if (!idToken) {
+      Alert.alert(T.errTitle, T.errGeneric);
       return;
     }
     setLoading(true);
     try {
-      const fullPhoneNumber = '+213' + phone.trim();
-      const requestOtp = httpsCallable(functions, 'requestOtp');
-      await requestOtp({ phone: fullPhoneNumber });
-      setOtpSent(true);
-      Alert.alert(T.sentTitle, T.sentMsg);
+      const credential = GoogleAuthProvider.credential(idToken);
+      const result = await signInWithCredential(auth, credential);
+      const uid = result.user.uid;
+
+      const existingDoc = await getDoc(doc(db, 'users', uid));
+      if (existingDoc.exists()) {
+        router.replace('/customer');
+        return;
+      }
+
+      setGoogleUser({
+        uid,
+        name: result.user.displayName || '',
+        email: result.user.email || '',
+        photoURL: result.user.photoURL || null,
+      });
+      setStep('phone');
     } catch (e: any) {
-      Alert.alert(T.errSendTitle, e.message || T.errSendMsg);
+      Alert.alert(T.errTitle, e.message || T.errGeneric);
     }
     setLoading(false);
   };
 
-  const handleVerifyAndSignup = async () => {
-    const cleanCode = verificationCode.replace(/[^0-9]/g, '');
-    if (!cleanCode || cleanCode.length !== 6) {
-      Alert.alert(T.errTitle, T.errOtpLen);
+  const handleConfirmPhone = async () => {
+    if (!/^[5-7][0-9]{8}$/.test(phone.trim())) {
+      Alert.alert(T.errTitle, T.errPhone);
       return;
     }
+    if (phone.trim() !== phoneConfirm.trim()) {
+      Alert.alert(T.errTitle, T.errPhoneMatch);
+      return;
+    }
+    if (!googleUser) return;
 
     setLoading(true);
     try {
-      const fullPhoneNumber = '+213' + phone.trim();
-      const verifyOtp = httpsCallable(functions, 'verifyOtp');
-      await verifyOtp({ phone: fullPhoneNumber, code: cleanCode });
-
-      const res = await createUserWithEmailAndPassword(auth, email.trim(), password);
-
-      await setDoc(doc(db, 'users', res.user.uid), {
-        name: name.trim(),
-        phone: fullPhoneNumber,
-        email: email.trim(),
+      await setDoc(doc(db, 'users', googleUser.uid), {
+        name: googleUser.name,
+        email: googleUser.email,
+        phone: '+213' + phone.trim(),
         role: 'customer',
-        photoURL: null,
+        photoURL: googleUser.photoURL,
         createdAt: serverTimestamp(),
       });
-
       router.replace('/customer');
     } catch (e: any) {
-      let msg = e.message || T.errGeneric;
-      if (e.code === 'functions/permission-denied') msg = T.errOtpWrong;
-      Alert.alert(T.errTitle, msg);
+      Alert.alert(T.errTitle, e.message || T.errGeneric);
     }
     setLoading(false);
   };
@@ -199,20 +166,33 @@ export default function SignupCustomer() {
 
         <Text style={s.emoji}>👤</Text>
         <Text style={s.title}>{T.title}</Text>
-        <Text style={s.subtitle}>{T.subtitle}</Text>
 
-        {!otpSent ? (
+        {step === 'google' ? (
           <>
-            <View style={s.inputWrap}>
-              <Text style={[s.label, { textAlign: isRTL ? 'right' : 'left' }]}>{T.name}</Text>
-              <TextInput
-                style={[s.input, { textAlign: isRTL ? 'right' : 'left' }]}
-                value={name}
-                onChangeText={setName}
-                placeholder={T.namePlaceholder}
-                placeholderTextColor="#bbb"
-              />
-            </View>
+            <Text style={s.subtitle}>{T.subtitle}</Text>
+
+            <TouchableOpacity
+              style={s.googleBtn}
+              onPress={() => promptAsync()}
+              disabled={!request || loading}
+            >
+              {loading ? (
+                <ActivityIndicator color="#1F2A40" />
+              ) : (
+                <>
+                  <Image
+                    source={{ uri: 'https://www.google.com/favicon.ico' }}
+                    style={s.googleIcon}
+                  />
+                  <Text style={s.googleBtnText}>{T.googleBtn}</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            <Text style={s.subtitle}>{T.phoneTitle}</Text>
+            <Text style={[s.subtitle, { fontSize: 12, marginTop: -12 }]}>{T.phoneSubtitle}</Text>
 
             <View style={s.inputWrap}>
               <Text style={[s.label, { textAlign: isRTL ? 'right' : 'left' }]}>{T.phone}</Text>
@@ -237,75 +217,29 @@ export default function SignupCustomer() {
             </View>
 
             <View style={s.inputWrap}>
-              <Text style={[s.label, { textAlign: isRTL ? 'right' : 'left' }]}>{T.email}</Text>
-              <TextInput
-                style={[s.input, { textAlign: 'left', writingDirection: 'ltr' }]}
-                value={email}
-                onChangeText={setEmail}
-                placeholder="example@email.com"
-                placeholderTextColor="#bbb"
-                keyboardType="email-address"
-                autoCapitalize="none"
-              />
+              <Text style={[s.label, { textAlign: isRTL ? 'right' : 'left' }]}>{T.phoneConfirm}</Text>
+              <View style={s.phoneContainer}>
+                <View style={s.flagBox}>
+                  <Text style={s.flagText}>+213</Text>
+                </View>
+                <TextInput
+                  style={s.phoneInput}
+                  value={phoneConfirm}
+                  onChangeText={setPhoneConfirm}
+                  placeholder="552937123"
+                  placeholderTextColor="#888"
+                  keyboardType="phone-pad"
+                  maxLength={9}
+                />
+              </View>
             </View>
 
-            <View style={s.inputWrap}>
-              <Text style={[s.label, { textAlign: isRTL ? 'right' : 'left' }]}>{T.password}</Text>
-              <TextInput
-                style={[s.input, { textAlign: isRTL ? 'right' : 'left' }]}
-                value={password}
-                onChangeText={setPassword}
-                placeholder={T.passwordPh}
-                placeholderTextColor="#bbb"
-                secureTextEntry
-              />
-            </View>
-
-            <View style={s.inputWrap}>
-              <Text style={[s.label, { textAlign: isRTL ? 'right' : 'left' }]}>{T.confirmPass}</Text>
-              <TextInput
-                style={[s.input, { textAlign: isRTL ? 'right' : 'left' }]}
-                value={confirm}
-                onChangeText={setConfirm}
-                placeholder={T.confirmPassPh}
-                placeholderTextColor="#bbb"
-                secureTextEntry
-              />
-            </View>
-
-            <TouchableOpacity style={s.submitBtn} onPress={handleSendOTP} disabled={loading}>
+            <TouchableOpacity style={s.submitBtn} onPress={handleConfirmPhone} disabled={loading}>
               {loading ? (
                 <ActivityIndicator color="#E8B84B" />
               ) : (
-                <Text style={s.submitBtnText}>{T.sendOtp}</Text>
+                <Text style={s.submitBtnText}>{T.confirmBtn}</Text>
               )}
-            </TouchableOpacity>
-          </>
-        ) : (
-          <>
-            <View style={s.inputWrap}>
-              <Text style={[s.label, { textAlign: isRTL ? 'right' : 'left' }]}>{T.otpLabel}</Text>
-              <TextInput
-                style={[s.input, { textAlign: 'center', fontSize: 20, letterSpacing: 4 }]}
-                value={verificationCode}
-                onChangeText={setVerificationCode}
-                placeholder="123456"
-                placeholderTextColor="#bbb"
-                keyboardType="number-pad"
-                maxLength={6}
-              />
-            </View>
-
-            <TouchableOpacity style={s.submitBtn} onPress={handleVerifyAndSignup} disabled={loading}>
-              {loading ? (
-                <ActivityIndicator color="#E8B84B" />
-              ) : (
-                <Text style={s.submitBtnText}>{T.verifyBtn}</Text>
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity onPress={() => setOtpSent(false)}>
-              <Text style={s.loginLink}>{T.reenterPhone}</Text>
             </TouchableOpacity>
           </>
         )}
@@ -320,13 +254,25 @@ export default function SignupCustomer() {
 }
 
 const s = StyleSheet.create({
-  scrollContent: { padding: 24, paddingTop: 60, paddingBottom: 220 },
+  scrollContent: { padding: 24, paddingTop: 80, paddingBottom: 220 },
   emoji: { fontSize: 48, textAlign: 'center', marginBottom: 16 },
   title: { fontSize: 22, fontWeight: '900', color: '#1F2A40', textAlign: 'center', marginBottom: 8 },
   subtitle: { fontSize: 13, color: '#1F2A40', textAlign: 'center', marginBottom: 24, opacity: 0.8 },
-  inputWrap: { marginBottom: 16 },
+  googleBtn: {
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+    borderRadius: 10,
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 16,
+    borderWidth: 1,
+    borderColor: '#d4a537',
+  },
+  googleIcon: { width: 22, height: 22, marginRight: 10 },
+  googleBtnText: { fontSize: 16, fontWeight: '700', color: '#1F2A40' },
+  inputWrap: { marginBottom: 16, marginTop: 8 },
   label: { fontSize: 13, fontWeight: '700', color: '#1F2A40', marginBottom: 6 },
-  input: { backgroundColor: '#fff', borderRadius: 10, paddingHorizontal: 16, paddingVertical: 12, fontSize: 15, borderWidth: 1, borderColor: '#d4a537', color: '#000' },
   phoneContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -350,6 +296,6 @@ const s = StyleSheet.create({
   },
   submitBtn: { backgroundColor: '#1F2A40', borderRadius: 10, paddingVertical: 16, alignItems: 'center', marginTop: 24 },
   submitBtnText: { fontSize: 16, fontWeight: '900', color: '#E8B84B', textAlign: 'center' },
-  loginLink: { fontSize: 13, color: '#1F2A40', textAlign: 'center', marginTop: 16, fontWeight: '600' },
+  loginLink: { fontSize: 13, color: '#1F2A40', textAlign: 'center', marginTop: 24, fontWeight: '600' },
 });
 

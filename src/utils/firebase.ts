@@ -23,6 +23,7 @@ export const db = getFirestore(app);
 export const storage = getStorage(app);
 // ── جديد: للاتصال بدوال Cloud Functions من التطبيق (requestOtp / verifyOtp) ──
 // europe-west1 لأنها نفس المنطقة المستخدمة لبقية الدوال في هذا المشروع
-export const functions = getFunctions(app, 'europe-west1');
+// us-central1 لأنها المنطقة الفعلية التي نُشرت فيها requestOtp/verifyOtp/broadcastNotification (دوال onCall تُنشر افتراضياً هناك، بخلاف دوال Firestore التلقائية التي في europe-west1)
+export const functions = getFunctions(app, 'us-central1');
 export default app;
 
