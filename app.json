@@ -52,7 +52,8 @@
       "expo-image",
       "expo-video",
       "expo-web-browser",
-      "expo-audio"
+      "expo-audio",
+      "@react-native-google-signin/google-signin"
     ],
     "experiments": {
       "typedRoutes": true,

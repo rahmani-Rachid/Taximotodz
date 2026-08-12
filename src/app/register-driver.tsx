@@ -1,12 +1,10 @@
-import { makeRedirectUri } from 'expo-auth-session';
-import * as Google from 'expo-auth-session/providers/google';
+import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-import * as WebBrowser from 'expo-web-browser';
 import { GoogleAuthProvider, createUserWithEmailAndPassword, sendEmailVerification, signInWithCredential } from 'firebase/auth';
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, Image, KeyboardAvoidingView,
   Platform, ScrollView, StyleSheet, Text, TextInput,
@@ -16,10 +14,9 @@ import { registerForPushNotificationsAsync } from '../constants/pushNotification
 import { useLanguage } from '../contexts/LanguageContext';
 import { auth, db, storage } from '../utils/firebase';
 
-WebBrowser.maybeCompleteAuthSession();
+const GOOGLE_WEB_CLIENT_ID = '1026634729182-rdfcpch5fr23r8lscr0lcim7as4mfq8a.apps.googleusercontent.com';
 
-const GOOGLE_ANDROID_CLIENT_ID = '1026634729182-l11dvakm05tn3uk1575a38ljbmpg2uhq.apps.googleusercontent.com';
-const GOOGLE_WEB_CLIENT_ID     = '1026634729182-rdfcpch5fr23r8lscr0lcim7as4mfq8a.apps.googleusercontent.com';
+GoogleSignin.configure({ webClientId: GOOGLE_WEB_CLIENT_ID });
 
 type Lang  = 'ar' | 'fr' | 'en';
 type Stage = 'choice' | 'emailForm' | 'phone' | 'name' | 'docs' | 'pending';
@@ -187,19 +184,20 @@ export default function RegisterDriver() {
   const t = T[lang];
   const isRTL = lang === 'ar';
 
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    androidClientId: GOOGLE_ANDROID_CLIENT_ID,
-    webClientId: GOOGLE_WEB_CLIENT_ID,
-    redirectUri: makeRedirectUri({ scheme: 'taximotodz' }),
-  });
-
-  useEffect(() => {
-    if (response?.type === 'success') {
-      handleGoogleSuccess(response.authentication?.idToken);
-    } else if (response?.type === 'error') {
-      Alert.alert(t.errTitle, t.errGeneric);
+  const handleGooglePress = async () => {
+    setLoading(true);
+    try {
+      await GoogleSignin.hasPlayServices();
+      const userInfo = await GoogleSignin.signIn();
+      const idToken = userInfo.data?.idToken;
+      await handleGoogleSuccess(idToken || undefined);
+    } catch (e: any) {
+      if (e.code !== 'SIGN_IN_CANCELLED' && e.code !== '-5') {
+        Alert.alert(t.errTitle, t.errGeneric);
+      }
+      setLoading(false);
     }
-  }, [response]);
+  };
 
   const handleGoogleSuccess = async (idToken: string | undefined) => {
     if (!idToken) { Alert.alert(t.errTitle, t.errGeneric); return; }
@@ -366,8 +364,8 @@ export default function RegisterDriver() {
           <>
             <TouchableOpacity
               style={s.googleBtn}
-              onPress={() => promptAsync()}
-              disabled={!request || loading}
+              onPress={handleGooglePress}
+              disabled={loading}
             >
               {loading ? (
                 <ActivityIndicator color="#1F2A40" />

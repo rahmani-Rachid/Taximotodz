@@ -1,10 +1,8 @@
-import { makeRedirectUri } from 'expo-auth-session';
-import * as Google from 'expo-auth-session/providers/google';
+import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import { useRouter } from 'expo-router';
-import * as WebBrowser from 'expo-web-browser';
 import { GoogleAuthProvider, createUserWithEmailAndPassword, sendEmailVerification, signInWithCredential } from 'firebase/auth';
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -21,10 +19,9 @@ import {
 import { Lang, useLanguage } from '../contexts/LanguageContext';
 import { auth, db } from '../utils/firebase';
 
-WebBrowser.maybeCompleteAuthSession();
+const GOOGLE_WEB_CLIENT_ID = '1026634729182-rdfcpch5fr23r8lscr0lcim7as4mfq8a.apps.googleusercontent.com';
 
-const GOOGLE_ANDROID_CLIENT_ID = '1026634729182-l11dvakm05tn3uk1575a38ljbmpg2uhq.apps.googleusercontent.com';
-const GOOGLE_WEB_CLIENT_ID     = '1026634729182-rdfcpch5fr23r8lscr0lcim7as4mfq8a.apps.googleusercontent.com';
+GoogleSignin.configure({ webClientId: GOOGLE_WEB_CLIENT_ID });
 
 const translations: Record<Lang, Record<string, string>> = {
   ar: {
@@ -141,19 +138,20 @@ export default function SignupCustomer() {
   const [phone, setPhone] = useState('');
   const [phoneConfirm, setPhoneConfirm] = useState('');
 
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    androidClientId: GOOGLE_ANDROID_CLIENT_ID,
-    webClientId: GOOGLE_WEB_CLIENT_ID,
-    redirectUri: makeRedirectUri({ scheme: 'taximotodz' }),
-  });
-
-  useEffect(() => {
-    if (response?.type === 'success') {
-      handleGoogleSuccess(response.authentication?.idToken);
-    } else if (response?.type === 'error') {
-      Alert.alert(T.errTitle, T.errGeneric);
+  const handleGooglePress = async () => {
+    setLoading(true);
+    try {
+      await GoogleSignin.hasPlayServices();
+      const userInfo = await GoogleSignin.signIn();
+      const idToken = userInfo.data?.idToken;
+      await handleGoogleSuccess(idToken || undefined);
+    } catch (e: any) {
+      if (e.code !== 'SIGN_IN_CANCELLED' && e.code !== '-5') {
+        Alert.alert(T.errTitle, T.errGeneric);
+      }
+      setLoading(false);
     }
-  }, [response]);
+  };
 
   const handleGoogleSuccess = async (idToken: string | undefined) => {
     if (!idToken) {
@@ -168,7 +166,7 @@ export default function SignupCustomer() {
 
       const existingDoc = await getDoc(doc(db, 'users', uid));
       if (existingDoc.exists()) {
-        router.replace('/app-customer');
+        router.replace('/customer');
         return;
       }
 
@@ -239,7 +237,7 @@ export default function SignupCustomer() {
         Alert.alert(isRTL ? 'معلومة' : 'Info', T.verifyEmailSent);
       }
 
-      router.replace('/app-customer');
+      router.replace('/customer');
     } catch (e: any) {
       Alert.alert(T.errTitle, e.message || T.errGeneric);
     }
@@ -263,8 +261,8 @@ export default function SignupCustomer() {
 
             <TouchableOpacity
               style={s.googleBtn}
-              onPress={() => promptAsync()}
-              disabled={!request || loading}
+              onPress={handleGooglePress}
+              disabled={loading}
             >
               {loading ? (
                 <ActivityIndicator color="#1F2A40" />
@@ -469,4 +467,3 @@ const s = StyleSheet.create({
   submitBtnText: { fontSize: 16, fontWeight: '900', color: '#E8B84B', textAlign: 'center' },
   loginLink: { fontSize: 13, color: '#1F2A40', textAlign: 'center', marginTop: 24, fontWeight: '600' },
 });
-
