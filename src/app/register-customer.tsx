@@ -1,3 +1,4 @@
+import { makeRedirectUri } from 'expo-auth-session';
 import * as Google from 'expo-auth-session/providers/google';
 import { useRouter } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
@@ -143,6 +144,7 @@ export default function SignupCustomer() {
   const [request, response, promptAsync] = Google.useAuthRequest({
     androidClientId: GOOGLE_ANDROID_CLIENT_ID,
     webClientId: GOOGLE_WEB_CLIENT_ID,
+    redirectUri: makeRedirectUri({ scheme: 'taximotodz' }),
   });
 
   useEffect(() => {
@@ -166,7 +168,7 @@ export default function SignupCustomer() {
 
       const existingDoc = await getDoc(doc(db, 'users', uid));
       if (existingDoc.exists()) {
-        router.replace('/customer');
+        router.replace('/app-customer');
         return;
       }
 
@@ -237,7 +239,7 @@ export default function SignupCustomer() {
         Alert.alert(isRTL ? 'معلومة' : 'Info', T.verifyEmailSent);
       }
 
-      router.replace('/customer');
+      router.replace('/app-customer');
     } catch (e: any) {
       Alert.alert(T.errTitle, e.message || T.errGeneric);
     }
