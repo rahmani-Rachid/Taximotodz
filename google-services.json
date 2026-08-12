@@ -12,7 +12,12 @@
           "package_name": "com.anonymous.taximotodz"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "1026634729182-rdfcpch5fr23r8lscr0lcim7as4mfq8a.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyBjNnlpsKuoA95I-18bUuPzJqP0NJJ2Cnw"
@@ -20,7 +25,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1026634729182-rdfcpch5fr23r8lscr0lcim7as4mfq8a.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     },
@@ -31,7 +41,20 @@
           "package_name": "com.taximoto.dz"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "1026634729182-l11dvakm05tn3uk1575a38ljbmpg2uhq.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.taximoto.dz",
+            "certificate_hash": "2eeba11d6c9d4e841047e2c50666ee39a8d9a477"
+          }
+        },
+        {
+          "client_id": "1026634729182-rdfcpch5fr23r8lscr0lcim7as4mfq8a.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyBjNnlpsKuoA95I-18bUuPzJqP0NJJ2Cnw"
@@ -39,7 +62,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1026634729182-rdfcpch5fr23r8lscr0lcim7as4mfq8a.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }
