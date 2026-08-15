@@ -1,8 +1,8 @@
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
-import { GoogleAuthProvider, createUserWithEmailAndPassword, sendEmailVerification, signInWithCredential } from 'firebase/auth';
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { GoogleAuthProvider, createUserWithEmailAndPassword, sendEmailVerification, signInWithCredential, signInWithEmailAndPassword } from 'firebase/auth';
+import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { useRef, useState } from 'react';
 import {
@@ -63,6 +63,11 @@ const T: Record<Lang, Record<string, string>> = {
     errGeneric:     'حدث خطأ ما، حاول مجدداً',
     errTitle:       'خطأ',
     verifyEmailSent:'تم إنشاء الحساب! أرسلنا رابط تحقق إلى بريدك الإلكتروني.',
+    pendingWait:    'طلبك السابق لا يزال قيد المراجعة، الرجاء الانتظار.',
+    alreadyApproved:'حسابك مُوافَق عليه بالفعل! سنُدخِلك مباشرة.',
+    resubmitTitle:  'تصحيح طلب سابق',
+    resubmitMsg:    'تم رفض طلبك السابق. عدّل معلوماتك ووثائقك وأعد الإرسال.',
+    wrongPasswordRetry: 'هذا البريد مُسجَّل مسبقاً. أدخل كلمة المرور الصحيحة لهذا الحساب أعلاه وحاول مجدداً.',
   },
   fr: {
     title:          'Inscription chauffeur 🏍️',
@@ -105,6 +110,11 @@ const T: Record<Lang, Record<string, string>> = {
     errGeneric:     'Une erreur est survenue, réessayez',
     errTitle:       'Erreur',
     verifyEmailSent:'Compte créé ! Un lien de vérification a été envoyé à votre e-mail.',
+    pendingWait:    "Votre demande précédente est en cours d'examen, veuillez patienter.",
+    alreadyApproved:'Votre compte est déjà approuvé ! Nous vous connectons directement.',
+    resubmitTitle:  'Correction de la demande précédente',
+    resubmitMsg:    'Votre demande précédente a été refusée. Modifiez vos informations et documents puis renvoyez.',
+    wrongPasswordRetry: 'Cet e-mail est déjà enregistré. Entrez le bon mot de passe ci-dessus et réessayez.',
   },
   en: {
     title:          'Driver Registration 🏍️',
@@ -147,6 +157,11 @@ const T: Record<Lang, Record<string, string>> = {
     errGeneric:     'Something went wrong, try again',
     errTitle:       'Error',
     verifyEmailSent:'Account created! A verification link was sent to your email.',
+    pendingWait:    'Your previous request is still under review, please wait.',
+    alreadyApproved:'Your account is already approved! Logging you in directly.',
+    resubmitTitle:  'Fix previous request',
+    resubmitMsg:    'Your previous request was rejected. Edit your information and documents, then resubmit.',
+    wrongPasswordRetry: 'This email is already registered. Enter the correct password above and try again.',
   },
 };
 
@@ -199,6 +214,40 @@ export default function RegisterDriver() {
     }
   };
 
+  // ── تتحقق من وجود طلب سائق سابق بنفس الحساب، وتوجّهه حسب حالته بدل رفضه كلياً ──
+  const checkExistingDriverAndProceed = async (uid: string, userEmail: string, displayName: string) => {
+    const existingSnap = await getDoc(doc(db, 'drivers', uid));
+
+    if (existingSnap.exists()) {
+      const data = existingSnap.data();
+
+      if (data.kyc_status === 'approved') {
+        Alert.alert(t.errTitle === 'Error' ? 'Info' : (isRTL ? 'معلومة' : 'Info'), t.alreadyApproved);
+        router.replace('/app-driver');
+        return true; // تم التعامل مع الحالة، لا نكمل التسجيل من جديد
+      }
+
+      if (data.kyc_status === 'pending') {
+        Alert.alert(t.errTitle === 'Error' ? 'Info' : (isRTL ? 'معلومة' : 'Info'), t.pendingWait);
+        return true;
+      }
+
+      if (data.kyc_status === 'rejected') {
+        // نسمح له بإعادة الإرسال — نُعبّئ بياناته السابقة كنقطة انطلاق قابلة للتعديل
+        Alert.alert(t.resubmitTitle, t.resubmitMsg);
+        setFirstName(data.firstName || '');
+        setLastName(data.lastName || '');
+        const phoneDigits = (data.phone || '').replace('+213', '');
+        setPhone(phoneDigits);
+        setPhoneConfirm(phoneDigits);
+        setStage('name');
+        return true;
+      }
+    }
+
+    return false; // لا يوجد طلب سابق — مستخدم جديد تماماً، نكمل التسجيل العادي
+  };
+
   const handleGoogleSuccess = async (idToken: string | undefined) => {
     if (!idToken) { Alert.alert(t.errTitle, t.errGeneric); return; }
     setLoading(true);
@@ -209,13 +258,13 @@ export default function RegisterDriver() {
       setEmail(result.user.email || '');
       setViaEmail(false);
 
-      // تعبئة الاسم تلقائياً كنقطة انطلاق — يبقى قابلاً للتعديل في خطوة لاحقة (يجب أن يطابق الرخصة)
       const displayName = result.user.displayName || '';
       const parts = displayName.trim().split(' ');
       setFirstName(parts[0] || '');
       setLastName(parts.slice(1).join(' ') || '');
 
-      setStage('phone');
+      const handled = await checkExistingDriverAndProceed(result.user.uid, result.user.email || '', displayName);
+      if (!handled) setStage('phone');
     } catch (e: any) {
       Alert.alert(t.errTitle, e.message || t.errGeneric);
     }
@@ -236,7 +285,21 @@ export default function RegisterDriver() {
       setViaEmail(true);
       setStage('phone');
     } catch (e: any) {
-      Alert.alert(t.errTitle, e.message || t.errGeneric);
+      if (e.code === 'auth/email-already-in-use') {
+        // ربما هذا صاحب الحساب فعلاً يحاول التسجيل من جديد — نجرّب تسجيل الدخول بنفس كلمة المرور المُدخَلة
+        try {
+          const result = await signInWithEmailAndPassword(auth, emailInput.trim(), password);
+          setUid(result.user.uid);
+          setEmail(emailInput.trim());
+          setViaEmail(true);
+          const handled = await checkExistingDriverAndProceed(result.user.uid, emailInput.trim(), '');
+          if (!handled) setStage('phone'); // حساب موجود لكن بدون طلب سائق سابق أصلاً
+        } catch {
+          Alert.alert(t.errTitle, t.wrongPasswordRetry);
+        }
+      } else {
+        Alert.alert(t.errTitle, e.message || t.errGeneric);
+      }
     }
     setLoading(false);
   };
@@ -269,17 +332,52 @@ export default function RegisterDriver() {
     setStage('docs');
   };
 
+  const [cameraOpening, setCameraOpening] = useState(false);
+
+  const handleCameraError = (e: any) => {
+    const msg = String(e?.message || e || '');
+    if (msg.includes('ActivityResultLauncher') || msg.includes('IllegalStateException')) {
+      Alert.alert(
+        'يجب إعادة تشغيل التطبيق',
+        'حدث خلل معروف في نظام أندرويد مع الكاميرا. أغلق التطبيق بالكامل (اسحبه من قائمة التطبيقات الأخيرة) ثم أعد فتحه، وحاول مجدداً.'
+      );
+    } else {
+      Alert.alert(t.errTitle, t.errGeneric);
+    }
+  };
+
   const pickLicense = async () => {
-    const res = await ImagePicker.launchCameraAsync({ cameraType: ImagePicker.CameraType.back, quality: 0.85 });
-    if (!res.canceled) setLicenseUri(res.assets[0].uri);
+    if (cameraOpening) return; // يمنع فتح الكاميرا مرتين معاً — سبب شائع لهذا الخطأ
+    setCameraOpening(true);
+    try {
+      const res = await ImagePicker.launchCameraAsync({ cameraType: ImagePicker.CameraType.back, quality: 0.85 });
+      if (!res.canceled) setLicenseUri(res.assets[0].uri);
+    } catch (e) {
+      handleCameraError(e);
+    }
+    setCameraOpening(false);
   };
   const pickCarteGrise = async () => {
-    const res = await ImagePicker.launchCameraAsync({ cameraType: ImagePicker.CameraType.back, quality: 0.85 });
-    if (!res.canceled) setCarteGriseUri(res.assets[0].uri);
+    if (cameraOpening) return;
+    setCameraOpening(true);
+    try {
+      const res = await ImagePicker.launchCameraAsync({ cameraType: ImagePicker.CameraType.back, quality: 0.85 });
+      if (!res.canceled) setCarteGriseUri(res.assets[0].uri);
+    } catch (e) {
+      handleCameraError(e);
+    }
+    setCameraOpening(false);
   };
   const pickSelfie = async () => {
-    const res = await ImagePicker.launchCameraAsync({ cameraType: ImagePicker.CameraType.front, quality: 0.85 });
-    if (!res.canceled) setSelfieUri(res.assets[0].uri);
+    if (cameraOpening) return;
+    setCameraOpening(true);
+    try {
+      const res = await ImagePicker.launchCameraAsync({ cameraType: ImagePicker.CameraType.front, quality: 0.85 });
+      if (!res.canceled) setSelfieUri(res.assets[0].uri);
+    } catch (e) {
+      handleCameraError(e);
+    }
+    setCameraOpening(false);
   };
 
   const uploadImage = async (uri: string, driverUid: string, fileName: string): Promise<string> => {

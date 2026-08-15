@@ -46,10 +46,15 @@ export async function registerForPushNotificationsAsync(
     await updateDoc(doc(db, collectionName, user.uid), { expoPushToken: token });
 
     if (Platform.OS === 'android') {
-      await Notifications.setNotificationChannelAsync('default', {
-        name: 'default',
+      // ⚠️ معرّف قناة جديد (rides-v2) بدل 'default' القديم — لأن أندرويد لا يسمح بتغيير
+      // أهمية قناة موجودة مسبقاً على الجهاز؛ القناة القديمة قد تكون عالقة بأهمية منخفضة
+      // من نسخة تطوير سابقة، حتى لو كان الكود هنا يطلب MAX الآن.
+      await Notifications.setNotificationChannelAsync('rides-v2', {
+        name: 'Ride notifications',
         importance: Notifications.AndroidImportance.MAX,
         vibrationPattern: [0, 250, 250, 250],
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        bypassDnd: false,
       });
     }
 

@@ -34,7 +34,8 @@ async function sendPush(tokenEntries = [], title = '', body = '', data = {}) {
     body,
     data,
     sound: 'default',
-    priority: 'high'
+    priority: 'high',
+    channelId: 'rides-v2', // يطابق القناة الجديدة المُنشأة في constants/pushNotifications.ts
   }));
 
   const ownerMap = valid.map(e => e.path || null);
@@ -261,22 +262,26 @@ exports.onDriverKycStatusChange = onDocumentUpdated('drivers/{driverId}', async 
 
   const driverDocPath = `drivers/${driverId}`;
   const token = after.expoPushToken;
-  if (!token) return null;
 
   if (after.kyc_status === 'approved') {
-    return await sendPush(
-      [{ token, path: driverDocPath }],
-      '🎉 تمت الموافقة على حسابك!', 'يمكنك الآن تسجيل الدخول والبدء باستقبال الرحلات',
-      { driverId, type: 'kyc_approved' },
-    );
+    const title = '🎉 تمت الموافقة على حسابك!';
+    const body = 'يمكنك الآن تسجيل الدخول والبدء باستقبال الرحلات';
+    await db.collection('notifications').add({
+      userId: driverId, title, body, read: false, createdAt: FieldValue.serverTimestamp(),
+    }).catch(() => {});
+    if (!token) return null;
+    return await sendPush([{ token, path: driverDocPath }], title, body, { driverId, type: 'kyc_approved' });
   }
 
   if (after.kyc_status === 'rejected') {
-    return await sendPush(
-      [{ token, path: driverDocPath }],
-      '❌ تعذّرت الموافقة على حسابك', 'بطاقة الدراجة أو بياناتك لم تُطابق الشروط. تواصل مع الدعم لمزيد من التفاصيل',
-      { driverId, type: 'kyc_rejected' },
-    );
+    const title = '❌ تعذّرت الموافقة على حسابك';
+    // السبب الحقيقي الذي كتبه الأدمن (rejectionReason)، أو نص افتراضي إن لم يُكتَب لأي سبب
+    const body = after.rejectionReason || 'بطاقة الدراجة أو بياناتك لم تُطابق الشروط. تواصل مع الدعم لمزيد من التفاصيل';
+    await db.collection('notifications').add({
+      userId: driverId, title, body, read: false, createdAt: FieldValue.serverTimestamp(),
+    }).catch(() => {});
+    if (!token) return null;
+    return await sendPush([{ token, path: driverDocPath }], title, body, { driverId, type: 'kyc_rejected' });
   }
 
   return null;

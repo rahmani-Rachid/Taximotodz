@@ -166,7 +166,7 @@ export default function SignupCustomer() {
 
       const existingDoc = await getDoc(doc(db, 'users', uid));
       if (existingDoc.exists()) {
-        router.replace('/customer');
+        router.replace('/app-customer');
         return;
       }
 
@@ -237,7 +237,7 @@ export default function SignupCustomer() {
         Alert.alert(isRTL ? 'معلومة' : 'Info', T.verifyEmailSent);
       }
 
-      router.replace('/customer');
+      router.replace('/app-customer');
     } catch (e: any) {
       Alert.alert(T.errTitle, e.message || T.errGeneric);
     }
@@ -467,3 +467,4 @@ const s = StyleSheet.create({
   submitBtnText: { fontSize: 16, fontWeight: '900', color: '#E8B84B', textAlign: 'center' },
   loginLink: { fontSize: 13, color: '#1F2A40', textAlign: 'center', marginTop: 24, fontWeight: '600' },
 });
+

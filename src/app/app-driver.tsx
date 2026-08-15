@@ -359,6 +359,8 @@ export default function AppDriver() {
  const [selectedRequest, setSelectedRequest] = useState<RideRequest | null>(null);
  const [detailRequest,   setDetailRequest]   = useState<RideRequest | null>(null);
  const [activeRide,      setActiveRide]      = useState<RideRequest | null>(null);
+ const activeRideRef = useRef<RideRequest | null>(null);
+ useEffect(() => { activeRideRef.current = activeRide; }, [activeRide]);
  const [proposedPrice,   setProposedPrice]   = useState(0);
  const [routeLoading,    setRouteLoading]    = useState(false);
 
@@ -376,6 +378,7 @@ export default function AppDriver() {
  const detailMapRef = useRef<MapView>(null);
  const mainMapRef   = useRef<MapView>(null);
  const toastId      = useRef(0);
+ const prevOwnPosRef = useRef<{ lat: number; lng: number } | null>(null);
 
  function pushToast(msg: string, type: 'warn' | 'info' = 'info') {
    const id = ++toastId.current;
@@ -441,6 +444,20 @@ export default function AppDriver() {
          updateDoc(doc(db, 'drivers', auth.currentUser!.uid), {
            lat, lng, updatedAt: serverTimestamp(), isOnline,
          }).catch(() => {});
+
+         // تتبع الكاميرا حياً أثناء الرحلة النشطة — تكبير + إمالة + دوران حسب اتجاه حركة السائق الفعلي
+         // (يعكس تلقائياً الاتجاه نحو الزبون قبل الوصول، ثم نحو الوجهة بعد الوصول، دون تمييز صريح بين المرحلتين)
+         if (activeRideRef.current && mainMapRef.current) {
+           const prev = prevOwnPosRef.current;
+           const heading = prev ? bearingDeg(prev.lat, prev.lng, lat, lng) : 0;
+           mainMapRef.current.animateCamera({
+             center: { latitude: lat, longitude: lng },
+             zoom: 17,
+             pitch: 45,
+             heading,
+           }, { duration: 900 });
+         }
+         prevOwnPosRef.current = { lat, lng };
        },
      );
    })();

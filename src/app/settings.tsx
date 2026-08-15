@@ -8,7 +8,7 @@ import {
   Alert, Image, Linking, ScrollView, StyleSheet,
   Switch, Text, TouchableOpacity, View,
 } from 'react-native';
-import { Lang, useLanguage } from '../contexts/LanguageContext'; // ← اللغة الآن مشتركة
+import { Lang, useLanguage } from '../contexts/LanguageContext';
 import { auth, db, storage } from '../utils/firebase';
 
 const translations: Record<Lang, Record<string, string>> = {
@@ -44,6 +44,8 @@ const translations: Record<Lang, Record<string, string>> = {
    notifications:   'الإشعارات',
    notifRides:      'إشعارات الرحلات',
    notifOffers:     'إشعارات العروض',
+   adminSection:    'الإدارة',
+   adminPanel:      'لوحة تحكم الأدمن',
  },
  fr: {
    settings:        '⚙️ Paramètres',
@@ -77,6 +79,8 @@ const translations: Record<Lang, Record<string, string>> = {
    notifications:   'Notifications',
    notifRides:      'Notifications de trajets',
    notifOffers:     'Notifications des offres',
+   adminSection:    'Administration',
+   adminPanel:      "Panneau d'administration",
  },
  en: {
    settings:        '⚙️ Settings',
@@ -110,12 +114,14 @@ const translations: Record<Lang, Record<string, string>> = {
    notifications:   'Notifications',
    notifRides:      'Ride notifications',
    notifOffers:     'Offer notifications',
+   adminSection:    'Administration',
+   adminPanel:      'Admin panel',
  },
 };
 
 export default function Settings() {
  const router = useRouter();
- const { lang } = useLanguage(); // ← القراءة فقط، الاختيار صار من القائمة الجانبية فقط
+ const { lang } = useLanguage();
  const [darkMode,    setDarkMode]    = useState(false);
  const [notifRides,  setNotifRides]  = useState(true);
  const [notifOffers, setNotifOffers] = useState(true);
@@ -124,6 +130,7 @@ export default function Settings() {
  const [photoURL,    setPhotoURL]    = useState<string | null>(null);
  const [selfieURL,   setSelfieURL]   = useState<string | null>(null);
  const [loading,     setLoading]     = useState(false);
+ const [isAdminUser, setIsAdminUser] = useState(false);
 
  const T = translations[lang];
 
@@ -145,9 +152,12 @@ export default function Settings() {
        });
      }
    });
+
+   getDoc(doc(db, 'admins', user.uid)).then(snap => {
+     setIsAdminUser(snap.exists());
+   }).catch(() => setIsAdminUser(false));
  }, []);
 
- // ── تغيير صورة الزبون فقط ──
  const changePhoto = async () => {
    const res = await ImagePicker.launchImageLibraryAsync({
      mediaTypes: ImagePicker.MediaType.Images,
@@ -181,7 +191,6 @@ export default function Settings() {
    }
  };
 
- // ── تغيير كلمة المرور ──
  const handleChangePassword = async () => {
    const user = auth.currentUser;
    if (!user?.email) return;
@@ -195,7 +204,6 @@ export default function Settings() {
    setLoading(false);
  };
 
- // ── حذف الحساب ──
  const handleDeleteAccount = () => {
    Alert.alert(T.deleteTitle, T.deleteConfirm, [
      { text: T.cancel, style: 'cancel' },
@@ -232,7 +240,6 @@ export default function Settings() {
    <ScrollView style={[s.container, { backgroundColor: bg }]}
      contentContainerStyle={{ paddingBottom: 60 }}>
 
-     {/* Header */}
      <View style={s.header}>
        <TouchableOpacity onPress={() => router.back()} style={s.backBtn}>
          <Text style={s.backBtnText}>→</Text>
@@ -240,7 +247,6 @@ export default function Settings() {
        <Text style={s.headerTitle}>{T.settings}</Text>
      </View>
 
-     {/* ── صورة البروفايل ── */}
      <View style={[s.card, { backgroundColor: card, alignItems: 'center', paddingVertical: 24 }]}>
        <Text style={[s.cardTitle, { color: sub }]}>{T.photo}</Text>
        {userRole === 'customer' ? (
@@ -274,7 +280,6 @@ export default function Settings() {
        </Text>
      </View>
 
-     {/* معلومات الحساب */}
      <View style={[s.card, { backgroundColor: card }]}>
        <Text style={[s.cardTitle, { color: sub }]}>{T.account}</Text>
        <View style={s.infoRow}>
@@ -295,7 +300,17 @@ export default function Settings() {
        </View>
      </View>
 
-     {/* الأمان */}
+     {isAdminUser && (
+       <View style={[s.card, { backgroundColor: card }]}>
+         <Text style={[s.cardTitle, { color: sub }]}>{T.adminSection}</Text>
+         <TouchableOpacity style={s.menuItem} onPress={() => router.push('/admin')}>
+           <Text style={s.menuEmoji}>🛠️</Text>
+           <Text style={[s.menuText, { color: text }]}>{T.adminPanel}</Text>
+           <Text style={s.chevron}>›</Text>
+         </TouchableOpacity>
+       </View>
+     )}
+
      <View style={[s.card, { backgroundColor: card }]}>
        <Text style={[s.cardTitle, { color: sub }]}>{T.security}</Text>
        <TouchableOpacity style={s.menuItem} onPress={handleChangePassword} disabled={loading}>
@@ -305,7 +320,6 @@ export default function Settings() {
        </TouchableOpacity>
      </View>
 
-     {/* الإشعارات */}
      <View style={[s.card, { backgroundColor: card }]}>
        <Text style={[s.cardTitle, { color: sub }]}>{T.notifications}</Text>
        <View style={s.switchRow}>
@@ -331,7 +345,6 @@ export default function Settings() {
        </View>
      </View>
 
-     {/* المظهر — للسائق فقط */}
      {userRole === 'driver' && (
        <View style={[s.card, { backgroundColor: card }]}>
          <Text style={[s.cardTitle, { color: sub }]}>{T.appearance}</Text>
@@ -348,7 +361,6 @@ export default function Settings() {
        </View>
      )}
 
-     {/* الدعم */}
      <View style={[s.card, { backgroundColor: card }]}>
        <Text style={[s.cardTitle, { color: sub }]}>{T.support}</Text>
        <TouchableOpacity style={s.menuItem}
@@ -366,7 +378,6 @@ export default function Settings() {
        </TouchableOpacity>
      </View>
 
-     {/* حذف الحساب */}
      <View style={[s.card, { backgroundColor: card }]}>
        <Text style={[s.cardTitle, { color: sub }]}>{T.danger}</Text>
        <TouchableOpacity style={s.deleteBtn} onPress={handleDeleteAccount} disabled={loading}>
@@ -405,4 +416,3 @@ const s = StyleSheet.create({
  deleteBtnText:    { fontSize: 15, fontWeight: '800', color: '#c0392b' },
  deleteHint:       { fontSize: 12, textAlign: 'center' },
 });
-
